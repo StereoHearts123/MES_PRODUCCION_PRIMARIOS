@@ -6,30 +6,97 @@ using System.Data;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
 
 namespace LaserCuttingApp
 {
     public partial class FormLaserCutting : Form
     {
         // ============== CONEXIONES A BASES DE DATOS ==============
-        private string connectionStringMartinRea = @"Data Source=10.241.1.27;Initial Catalog=MartinRea MJ;User Id=sa;Password=Mrea$ql123;Connection Timeout=30;Max Pool Size=100;";
+        private readonly string connectionStringMartinRea = @"Data Source=10.241.1.27;Initial Catalog=MartinRea MJ;User Id=sa;Password=Mrea$ql123;Connection Timeout=30;Max Pool Size=120;";
+        private readonly string connectionStringORD_PROD = @"Data Source=10.241.1.27;Initial Catalog=ORD_PROD;User Id=sa;Password=Mrea$ql123;Connection Timeout=30;Max Pool Size=120;";
+        private readonly string connectionStringMES = @"Data Source=10.241.1.27;Initial Catalog=MES;User Id=sa;Password=Mrea$ql123;Connection Timeout=60;Max Pool Size=120;";
+        private readonly string connectionStringMES_PRODUCTION = @"Data Source=10.241.1.27;Initial Catalog=MES_PRODUCTION;User Id=sa;Password=Mrea$ql123;Connection Timeout=60;Max Pool Size=120;";
+
+        // ============== CONSTANTES ==============
+        private const int NOTIFICACION_DURACION_MS = 3000;
 
         // ============== VARIABLES PRINCIPALES ==============
         private string cncSeleccionado = "";
         private string nestingSeleccionado = "";
         private string parteSeleccionada = "";
         private string recursoSeleccionado = "";
+        private string catIdSeleccionado = "0";
         private string nstRefActual = "";
         private string mnORefActual = "";
-        private int cantidadProduccionActual = 0;  // Quantity de la tabla 00000500
-        private int cantidadProgramadaNesting = 0;  // Quantity de la tabla 00000100
-        private int cantidadReportadaNesting = 0;   // CutQuantity de la tabla 00000100
-        private int cantidadPendienteNesting = 0;   // Pendiente del nesting
+        private int cantidadProduccionActual = 0;
+        private int cantidadProgramadaNesting = 0;
+        private int cantidadReportadaNesting = 0;
+        private int cantidadPendienteNesting = 0;
         private bool isLoading = false;
+
+        // Cache para recursos (incluye CAT_ID)
+        private readonly ConcurrentDictionary<string, RecursoInfo> cacheRecursos = new ConcurrentDictionary<string, RecursoInfo>();
+
+        // Cache para SUBRESOURCE_ID
+        private readonly ConcurrentDictionary<string, int> cacheSubresourceId = new ConcurrentDictionary<string, int>();
+
+        // Semaphore para control de concurrencia
+        private readonly System.Threading.SemaphoreSlim semaphore = new System.Threading.SemaphoreSlim(1, 1);
 
         // ============== ESTRUCTURAS DE DATOS ==============
         private List<NestingInfo> nestingsActuales = new List<NestingInfo>();
         private List<ParteInfo> partesActuales = new List<ParteInfo>();
+
+        public class RecursoInfo
+        {
+            public string Recurso { get; set; }
+            public string Descripcion { get; set; }
+            public string CAT_ID { get; set; }
+
+            public RecursoInfo()
+            {
+                Recurso = "";
+                Descripcion = "";
+                CAT_ID = "0";
+            }
+        }
+
+        public class NestingInfo
+        {
+            public string NstRef { get; set; }
+            public string Nombre { get; set; }
+            public int CantidadProgramada { get; set; }
+            public int CantidadReportada { get; set; }
+            public int CantidadPendiente { get; set; }
+            public string Estado { get; set; }
+
+            public NestingInfo()
+            {
+                NstRef = "";
+                Nombre = "";
+                Estado = "";
+            }
+        }
+
+        public class ParteInfo
+        {
+            public string MnORef { get; set; }
+            public string OprID { get; set; }
+            public string PrdRefDst { get; set; }
+            public string Recurso { get; set; }
+            public int Cantidad { get; set; }
+            public string NstRef { get; set; }
+
+            public ParteInfo()
+            {
+                MnORef = "";
+                OprID = "";
+                PrdRefDst = "";
+                Recurso = "";
+                NstRef = "";
+            }
+        }
 
         // ============== CONTROLES DE LA INTERFAZ ==============
         private Panel panelCabecera;
@@ -40,6 +107,7 @@ namespace LaserCuttingApp
         private Label lblNestingSeleccionado;
         private Label lblRecursoSeleccionado;
         private Label lblParteSeleccionada;
+        private Label lblCatIdValor;
         private Label lblNstRefValor;
         private Label lblCantidadInfo;
         private Label lblEstadoConexion;
@@ -50,57 +118,31 @@ namespace LaserCuttingApp
         private FlowLayoutPanel panelPartes;
         private Button btnBuscar;
         private Button btnReportar;
-        private Button btnActualizar;
         private Button btnLimpiar;
         private Timer timerReloj;
         private Label lblCargando;
-
-        // Variables para selección visual
-        private Button nestingSeleccionadoBtn = null;
-        private Button parteSeleccionadaBtn = null;
-
-        // ============== CONTROLES PARA CANTIDAD ==============
         private TextBox txtCantidad;
         private Label lblCantidadTitulo;
 
-        // ============== CLASES AUXILIARES ==============
-        public class NestingInfo
-        {
-            public string NstRef { get; set; }
-            public string Nombre { get; set; }
-            public int CantidadProgramada { get; set; }
-            public int CantidadReportada { get; set; }
-            public int CantidadPendiente { get; set; }
-            public string Estado { get; set; }
-        }
+        private Button nestingSeleccionadoBtn = null;
+        private Button parteSeleccionadaBtn = null;
 
-        public class ParteInfo
-        {
-            public string MnORef { get; set; }      // JOB
-            public string OprID { get; set; }       // Operación
-            public string PrdRefDst { get; set; }   // Número de parte
-            public string Recurso { get; set; }     // Recurso asociado
-            public int Cantidad { get; set; }       // Quantity de la tabla 00000500
-            public string NstRef { get; set; }
-        }
-
-        // ============== COLORES DEL SISTEMA ==============
-        private Color colorPrimario = Color.FromArgb(106, 13, 18);
-        private Color colorSecundario = Color.FromArgb(0, 114, 198);
-        private Color colorExito = Color.FromArgb(40, 167, 69);
-        private Color colorPeligro = Color.FromArgb(220, 53, 69);
-        private Color colorInfo = Color.FromArgb(23, 162, 184);
-        private Color colorFondo = Color.FromArgb(245, 245, 245);
-        private Color colorNormal = Color.FromArgb(248, 249, 250);
-        private Color colorSeleccionado = Color.FromArgb(0, 114, 198);
-        private Color colorBorde = Color.FromArgb(200, 200, 200);
+        // ============== COLORES ==============
+        private readonly Color colorPrimario = Color.FromArgb(106, 13, 18);
+        private readonly Color colorSecundario = Color.FromArgb(0, 114, 198);
+        private readonly Color colorExito = Color.FromArgb(40, 167, 69);
+        private readonly Color colorPeligro = Color.FromArgb(220, 53, 69);
+        private readonly Color colorInfo = Color.FromArgb(23, 162, 184);
+        private readonly Color colorFondo = Color.FromArgb(245, 245, 245);
+        private readonly Color colorSeleccionado = Color.FromArgb(0, 114, 198);
+        private readonly Color colorBorde = Color.FromArgb(200, 200, 200);
 
         public FormLaserCutting()
         {
             InitializeComponent();
             ConfigurarEstiloGeneral();
             ConfigurarInterfaz();
-            CargarDatosInicialesAsync();
+            _ = CargarDatosInicialesAsync();
         }
 
         private void InitializeComponent()
@@ -114,16 +156,14 @@ namespace LaserCuttingApp
 
         private void ConfigurarEstiloGeneral()
         {
-            this.Text = "SISTEMA DE REPORTE - CORTADORAS LÁSER";
+            this.Text = "SISTEMA DE REPORTE - CORTADORAS LASER";
             this.BackColor = colorFondo;
             this.DoubleBuffered = true;
-
             this.FormBorderStyle = FormBorderStyle.FixedSingle;
             this.MaximizeBox = false;
             this.MinimizeBox = true;
             this.Size = new Size(1366, 800);
             this.StartPosition = FormStartPosition.CenterScreen;
-            this.WindowState = FormWindowState.Normal;
         }
 
         private void ConfigurarInterfaz()
@@ -145,7 +185,7 @@ namespace LaserCuttingApp
 
             lblTitulo = new Label
             {
-                Text = "REPORTE DE PRODUCCIÓN - CORTADORAS LÁSER",
+                Text = "REPORTE DE PRODUCCION - CORTADORAS LASER",
                 Font = new Font("Arial", 18, FontStyle.Bold),
                 ForeColor = Color.White,
                 Dock = DockStyle.Fill,
@@ -165,7 +205,16 @@ namespace LaserCuttingApp
                 Padding = new Padding(15)
             };
 
-            // ========== PANEL DE BÚSQUEDA ==========
+            ConfigurarPanelBusqueda();
+            ConfigurarPanelNestings();
+            ConfigurarPanelPartes();
+            ConfigurarPanelControl();
+
+            this.Controls.Add(panelPrincipal);
+        }
+
+        private void ConfigurarPanelBusqueda()
+        {
             Panel panelBusqueda = new Panel
             {
                 Location = new Point(15, 50),
@@ -188,13 +237,12 @@ namespace LaserCuttingApp
                 Location = new Point(140, 22),
                 Size = new Size(250, 30),
                 Font = new Font("Arial", 12),
-                Text = "Ingrese código CNC...",
-                ForeColor = Color.Gray,
-                BackColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle
+                Text = "Ingrese codigo CNC...",
+                ForeColor = Color.Gray
             };
             txtBuscarCNC.GotFocus += TxtBuscarCNC_GotFocus;
             txtBuscarCNC.LostFocus += TxtBuscarCNC_LostFocus;
+            txtBuscarCNC.KeyPress += TxtBuscarCNC_KeyPress;
 
             btnBuscar = new Button
             {
@@ -233,13 +281,6 @@ namespace LaserCuttingApp
                 AutoSize = true
             };
 
-            panelBusqueda.Controls.Add(lblBuscarCNC);
-            panelBusqueda.Controls.Add(txtBuscarCNC);
-            panelBusqueda.Controls.Add(btnBuscar);
-            panelBusqueda.Controls.Add(btnRefrescar);
-            panelBusqueda.Controls.Add(lblEjemplo);
-
-            // ========== LABEL DE CARGA ==========
             lblCargando = new Label
             {
                 Text = "Cargando datos...",
@@ -249,9 +290,13 @@ namespace LaserCuttingApp
                 AutoSize = true,
                 Visible = false
             };
-            panelPrincipal.Controls.Add(lblCargando);
 
-            // ========== PANEL DE NESTINGS ==========
+            panelBusqueda.Controls.AddRange(new Control[] { lblBuscarCNC, txtBuscarCNC, btnBuscar, btnRefrescar, lblEjemplo });
+            panelPrincipal.Controls.AddRange(new Control[] { panelBusqueda, lblCargando });
+        }
+
+        private void ConfigurarPanelNestings()
+        {
             Panel panelNestingsContainer = new Panel
             {
                 Location = new Point(15, 160),
@@ -269,15 +314,6 @@ namespace LaserCuttingApp
                 AutoSize = true
             };
 
-            Label lblInfoNestings = new Label
-            {
-                Text = "Seleccione un nesting para ver sus partes",
-                Font = new Font("Arial", 9),
-                ForeColor = Color.Gray,
-                Location = new Point(10, 35),
-                AutoSize = true
-            };
-
             panelNestings = new FlowLayoutPanel
             {
                 Location = new Point(10, 60),
@@ -288,11 +324,12 @@ namespace LaserCuttingApp
                 BackColor = Color.White
             };
 
-            panelNestingsContainer.Controls.Add(lblNestingsTitulo);
-            panelNestingsContainer.Controls.Add(lblInfoNestings);
-            panelNestingsContainer.Controls.Add(panelNestings);
+            panelNestingsContainer.Controls.AddRange(new Control[] { lblNestingsTitulo, panelNestings });
+            panelPrincipal.Controls.Add(panelNestingsContainer);
+        }
 
-            // ========== PANEL DE PARTES ==========
+        private void ConfigurarPanelPartes()
+        {
             Panel panelPartesContainer = new Panel
             {
                 Location = new Point(460, 160),
@@ -303,19 +340,10 @@ namespace LaserCuttingApp
 
             Label lblPartesTitulo = new Label
             {
-                Text = "NÚMEROS DE PARTE",
+                Text = "NUMEROS DE PARTE",
                 Font = new Font("Arial", 12, FontStyle.Bold),
                 ForeColor = colorSecundario,
                 Location = new Point(10, 10),
-                AutoSize = true
-            };
-
-            Label lblInfoPartes = new Label
-            {
-                Text = "Seleccione una parte para reportar",
-                Font = new Font("Arial", 9),
-                ForeColor = Color.Gray,
-                Location = new Point(10, 35),
                 AutoSize = true
             };
 
@@ -329,11 +357,12 @@ namespace LaserCuttingApp
                 BackColor = Color.White
             };
 
-            panelPartesContainer.Controls.Add(lblPartesTitulo);
-            panelPartesContainer.Controls.Add(lblInfoPartes);
-            panelPartesContainer.Controls.Add(panelPartes);
+            panelPartesContainer.Controls.AddRange(new Control[] { lblPartesTitulo, panelPartes });
+            panelPrincipal.Controls.Add(panelPartesContainer);
+        }
 
-            // ========== PANEL DE CONTROL ==========
+        private void ConfigurarPanelControl()
+        {
             Panel panelControl = new Panel
             {
                 Location = new Point(905, 160),
@@ -342,19 +371,10 @@ namespace LaserCuttingApp
                 BackColor = Color.White
             };
 
-            Label lblInfoTrabajo = new Label
-            {
-                Text = "INFORMACIÓN DEL TRABAJO",
-                Font = new Font("Arial", 12, FontStyle.Bold),
-                ForeColor = colorSecundario,
-                Location = new Point(15, 10),
-                AutoSize = true
-            };
-
             Panel panelInfoTrabajo = new Panel
             {
                 Location = new Point(15, 40),
-                Size = new Size(410, 150),
+                Size = new Size(410, 180),
                 BackColor = Color.FromArgb(248, 249, 250),
                 BorderStyle = BorderStyle.FixedSingle
             };
@@ -391,11 +411,28 @@ namespace LaserCuttingApp
                 AutoSize = true
             };
 
-            Label lblJobInfo = new Label
+            Label lblCatIdTitulo = new Label
             {
-                Text = "JOB / Operación:",
+                Text = "CAT_ID:",
                 Font = new Font("Arial", 10, FontStyle.Bold),
                 Location = new Point(10, 110),
+                AutoSize = true
+            };
+
+            lblCatIdValor = new Label
+            {
+                Text = "--",
+                Font = new Font("Arial", 10, FontStyle.Bold),
+                ForeColor = colorExito,
+                Location = new Point(70, 110),
+                AutoSize = true
+            };
+
+            Label lblJobInfo = new Label
+            {
+                Text = "JOB / Operacion:",
+                Font = new Font("Arial", 10, FontStyle.Bold),
+                Location = new Point(10, 135),
                 AutoSize = true
             };
 
@@ -404,17 +441,9 @@ namespace LaserCuttingApp
                 Text = "--",
                 Font = new Font("Arial", 10, FontStyle.Bold),
                 ForeColor = colorInfo,
-                Location = new Point(130, 110),
+                Location = new Point(130, 135),
                 AutoSize = true,
                 Name = "lblJobValor"
-            };
-
-            Label lblNstRef = new Label
-            {
-                Text = "NstRef:",
-                Font = new Font("Arial", 10, FontStyle.Bold),
-                Location = new Point(10, 135),
-                AutoSize = true
             };
 
             lblNstRefValor = new Label
@@ -422,92 +451,61 @@ namespace LaserCuttingApp
                 Text = "--",
                 Font = new Font("Arial", 10, FontStyle.Bold),
                 ForeColor = colorInfo,
-                Location = new Point(70, 135),
+                Location = new Point(15, 160),
                 AutoSize = true
             };
 
-            panelInfoTrabajo.Controls.Add(lblCNCSeleccionado);
-            panelInfoTrabajo.Controls.Add(lblNestingSeleccionado);
-            panelInfoTrabajo.Controls.Add(lblRecursoSeleccionado);
-            panelInfoTrabajo.Controls.Add(lblParteSeleccionada);
-            panelInfoTrabajo.Controls.Add(lblJobInfo);
-            panelInfoTrabajo.Controls.Add(lblJobValor);
-            panelInfoTrabajo.Controls.Add(lblNstRef);
-            panelInfoTrabajo.Controls.Add(lblNstRefValor);
+            panelInfoTrabajo.Controls.AddRange(new Control[] { lblCNCSeleccionado, lblNestingSeleccionado, lblRecursoSeleccionado,
+                lblParteSeleccionada, lblCatIdTitulo, lblCatIdValor, lblJobInfo, lblJobValor, lblNstRefValor });
 
             lblCantidadInfo = new Label
             {
-                Text = "Nesting - Programado: 0 | Reportado: 0 | Pendiente: 0",
+                Text = "Programado: 0 | Reportado: 0 | Pendiente: 0",
                 Font = new Font("Arial", 9),
                 ForeColor = colorPrimario,
-                Location = new Point(15, 200),
-                AutoSize = true
-            };
-
-            Label lblSeparador = new Label
-            {
-                Text = "────────────────────────────────────────────",
-                Font = new Font("Arial", 8),
-                ForeColor = Color.Gray,
-                Location = new Point(15, 225),
+                Location = new Point(15, 240),
                 AutoSize = true
             };
 
             lblCantidadTitulo = new Label
             {
-                Text = "CANTIDAD A REPORTAR (Quantity de la parte)",
+                Text = "CANTIDAD A REPORTAR",
                 Font = new Font("Arial", 11, FontStyle.Bold),
                 ForeColor = colorSecundario,
-                Location = new Point(15, 245),
+                Location = new Point(15, 270),
                 AutoSize = true
             };
 
             txtCantidad = new TextBox
             {
-                Location = new Point(15, 275),
+                Location = new Point(15, 300),
                 Size = new Size(410, 45),
                 Font = new Font("Arial", 18, FontStyle.Bold),
                 TextAlign = HorizontalAlignment.Center,
                 BackColor = Color.White,
                 Text = "0",
-                BorderStyle = BorderStyle.FixedSingle,
                 ReadOnly = true
             };
 
             btnReportar = new Button
             {
-                Text = "REPORTAR PRODUCCIÓN",
-                Location = new Point(15, 340),
+                Text = "MANDAR A REPORTAR PRODUCCION",
+                Location = new Point(15, 360),
                 Size = new Size(410, 50),
                 Font = new Font("Arial", 11, FontStyle.Bold),
                 BackColor = colorExito,
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
-                Cursor = Cursors.Hand
+                Cursor = Cursors.Hand,
+                Enabled = false
             };
             btnReportar.FlatAppearance.BorderSize = 0;
             btnReportar.Click += async (s, e) => await ReportarProduccionAsync();
-            btnReportar.Enabled = false;
-
-            btnActualizar = new Button
-            {
-                Text = "ACTUALIZAR CANTIDAD PROGRAMADA DEL NESTING",
-                Location = new Point(15, 400),
-                Size = new Size(410, 50),
-                Font = new Font("Arial", 10, FontStyle.Bold),
-                BackColor = colorInfo,
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Cursor = Cursors.Hand
-            };
-            btnActualizar.FlatAppearance.BorderSize = 0;
-            btnActualizar.Click += async (s, e) => await ActualizarCantidadProgramadaNestingAsync();
-            btnActualizar.Enabled = false;
 
             btnLimpiar = new Button
             {
-                Text = "LIMPIAR SELECCIÓN",
-                Location = new Point(15, 460),
+                Text = "LIMPIAR SELECCION",
+                Location = new Point(15, 420),
                 Size = new Size(410, 45),
                 Font = new Font("Arial", 11, FontStyle.Bold),
                 BackColor = colorPeligro,
@@ -518,25 +516,12 @@ namespace LaserCuttingApp
             btnLimpiar.FlatAppearance.BorderSize = 0;
             btnLimpiar.Click += (s, e) => LimpiarSeleccion();
 
-            panelControl.Controls.Add(lblInfoTrabajo);
-            panelControl.Controls.Add(panelInfoTrabajo);
-            panelControl.Controls.Add(lblCantidadInfo);
-            panelControl.Controls.Add(lblSeparador);
-            panelControl.Controls.Add(lblCantidadTitulo);
-            panelControl.Controls.Add(txtCantidad);
-            panelControl.Controls.Add(btnReportar);
-            panelControl.Controls.Add(btnActualizar);
-            panelControl.Controls.Add(btnLimpiar);
-
-            panelPrincipal.Controls.Add(panelBusqueda);
-            panelPrincipal.Controls.Add(panelNestingsContainer);
-            panelPrincipal.Controls.Add(panelPartesContainer);
+            panelControl.Controls.AddRange(new Control[] { panelInfoTrabajo, lblCantidadInfo, lblCantidadTitulo,
+                txtCantidad, btnReportar, btnLimpiar });
             panelPrincipal.Controls.Add(panelControl);
-
-            this.Controls.Add(panelPrincipal);
         }
 
-         private void ConfigurarPanelInferior()
+        private void ConfigurarPanelInferior()
         {
             panelInferior = new Panel
             {
@@ -548,7 +533,7 @@ namespace LaserCuttingApp
 
             lblEstadoConexion = new Label
             {
-                Text = "● CONECTADO",
+                Text = "CONECTADO",
                 Font = new Font("Arial", 9, FontStyle.Bold),
                 ForeColor = Color.Green,
                 Location = new Point(15, 12),
@@ -568,24 +553,11 @@ namespace LaserCuttingApp
                 Text = DateTime.Now.ToString("HH:mm:ss"),
                 Font = new Font("Arial", 11, FontStyle.Bold),
                 ForeColor = colorSecundario,
-                Location = new Point(200, 25),
+                Location = new Point(200, 28),
                 AutoSize = true
             };
 
-            Label lblVersion = new Label
-            {
-                Text = "ACTUALIZADO CADA DÍA EN PROCESAMIENTO",
-                Font = new Font("Arial", 8),
-                ForeColor = Color.Gray,
-                Location = new Point(1150, 15),
-                AutoSize = true
-            };
-
-            panelInferior.Controls.Add(lblEstadoConexion);
-            panelInferior.Controls.Add(lblFechaActual);
-            panelInferior.Controls.Add(lblHoraActual);
-            panelInferior.Controls.Add(lblVersion);
-
+            panelInferior.Controls.AddRange(new Control[] { lblEstadoConexion, lblFechaActual, lblHoraActual });
             this.Controls.Add(panelInferior);
         }
 
@@ -599,10 +571,9 @@ namespace LaserCuttingApp
             };
         }
 
-        // ============== MÉTODOS PARA PLACEHOLDER ==============
         private void TxtBuscarCNC_GotFocus(object sender, EventArgs e)
         {
-            if (txtBuscarCNC.Text == "Ingrese código CNC...")
+            if (txtBuscarCNC.Text == "Ingrese codigo CNC...")
             {
                 txtBuscarCNC.Text = "";
                 txtBuscarCNC.ForeColor = Color.Black;
@@ -613,24 +584,31 @@ namespace LaserCuttingApp
         {
             if (string.IsNullOrWhiteSpace(txtBuscarCNC.Text))
             {
-                txtBuscarCNC.Text = "Ingrese código CNC...";
+                txtBuscarCNC.Text = "Ingrese codigo CNC...";
                 txtBuscarCNC.ForeColor = Color.Gray;
             }
         }
 
-        // ============== MÉTODOS DE DATOS ==============
+        private void TxtBuscarCNC_KeyPress(object sender, KeyPressEventArgs e)
+        {
+            if (e.KeyChar == (char)Keys.Enter)
+            {
+                e.Handled = true;
+                _ = BuscarCNCAsync();
+            }
+        }
 
         private async Task CargarDatosInicialesAsync()
         {
             try
             {
                 await ProbarConexionAsync();
-                MostrarNotificacion("Sistema listo. Ingrese un código CNC para buscar.", Color.Green);
+                MostrarNotificacion("Sistema listo. Ingrese un codigo CNC para buscar.", Color.Green);
             }
             catch (Exception ex)
             {
                 MostrarNotificacion($"Error al conectar: {ex.Message}", Color.Red);
-                lblEstadoConexion.Text = "● DESCONECTADO";
+                lblEstadoConexion.Text = "DESCONECTADO";
                 lblEstadoConexion.ForeColor = Color.Red;
             }
         }
@@ -646,30 +624,230 @@ namespace LaserCuttingApp
             });
         }
 
+        // ============== OBTENER RECURSO Y CAT_ID DESDE capability ==============
+        private async Task<RecursoInfo> ObtenerRecursoDesdeTablaAsync(string numeroParte)
+        {
+            if (cacheRecursos.TryGetValue(numeroParte, out RecursoInfo cachedInfo))
+                return cachedInfo;
+
+            try
+            {
+                string query = @"
+                SELECT TOP 1 
+                    ISNULL(c.AORESC, 'No especificado') as recurso,
+                    ISNULL(l.desc_recurso, '') as desc_recurso,
+                    ISNULL(c.AVCATA, '0') as cat_id
+                FROM [MES_PRODUCTION].[dbo].[capability] c
+                LEFT JOIN [ORD_PROD].[dbo].[laser_recursos] l 
+                    ON c.AOPART COLLATE Modern_Spanish_CI_AS = l.part COLLATE Modern_Spanish_CI_AS
+                WHERE c.AOPART = @numeroParte
+                AND c.ARREPP = 'Y'";
+
+                DataTable dt = new DataTable();
+
+                await Task.Run(() =>
+                {
+                    using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
+                    {
+                        using (SqlCommand cmd = new SqlCommand(query, conn))
+                        {
+                            cmd.Parameters.AddWithValue("@numeroParte", numeroParte);
+                            using (SqlDataAdapter da = new SqlDataAdapter(cmd))
+                            {
+                                da.Fill(dt);
+                            }
+                        }
+                    }
+                });
+
+                RecursoInfo recursoInfo = new RecursoInfo();
+
+                if (dt.Rows.Count > 0)
+                {
+                    recursoInfo.Recurso = dt.Rows[0]["recurso"].ToString() ?? "No especificado";
+                    recursoInfo.Descripcion = dt.Rows[0]["desc_recurso"].ToString() ?? "";
+                    recursoInfo.CAT_ID = dt.Rows[0]["cat_id"].ToString() ?? "0";
+                }
+                else
+                {
+                    recursoInfo.Recurso = "No especificado";
+                    recursoInfo.Descripcion = "";
+                    recursoInfo.CAT_ID = "0";
+                }
+
+                cacheRecursos[numeroParte] = recursoInfo;
+                return recursoInfo;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error al obtener recurso: {ex.Message}");
+                return new RecursoInfo { Recurso = "Error", Descripcion = "", CAT_ID = "0" };
+            }
+        }
+
+        // ============== OBTENER SUBRESOURCE_ID DESDE MES.TBL_SUBRESOURCE ==============
+        private async Task<int> ObtenerSubresourceIdAsync(string recurso)
+        {
+            if (string.IsNullOrEmpty(recurso) || recurso == "No especificado" || recurso == "Error")
+                return 0;
+
+            if (cacheSubresourceId.TryGetValue(recurso, out int cachedId))
+                return cachedId;
+
+            try
+            {
+                string query = @"
+                SELECT TOP 1 ID 
+                FROM MES.TBL_SUBRESOURCE 
+                WHERE SUB_NAME LIKE @recurso
+                AND ACTIVE = 1
+                ORDER BY ID";
+
+                using (SqlConnection conn = new SqlConnection(connectionStringMES))
+                {
+                    await conn.OpenAsync();
+                    using (SqlCommand cmd = new SqlCommand(query, conn))
+                    {
+                        cmd.Parameters.AddWithValue("@recurso", "%" + recurso + "%");
+                        object result = await cmd.ExecuteScalarAsync();
+
+                        if (result != null && result != DBNull.Value)
+                        {
+                            int id = Convert.ToInt32(result);
+                            cacheSubresourceId[recurso] = id;
+                            return id;
+                        }
+                    }
+                }
+
+                // Si no encuentra, intentar obtener el primer activo
+                string queryDefault = "SELECT TOP 1 ID FROM MES.TBL_SUBRESOURCE WHERE ACTIVE = 1 ORDER BY ID";
+                using (SqlConnection conn = new SqlConnection(connectionStringMES))
+                {
+                    await conn.OpenAsync();
+                    using (SqlCommand cmd = new SqlCommand(queryDefault, conn))
+                    {
+                        object result = await cmd.ExecuteScalarAsync();
+                        if (result != null && result != DBNull.Value)
+                        {
+                            int id = Convert.ToInt32(result);
+                            cacheSubresourceId[recurso] = id;
+                            return id;
+                        }
+                    }
+                }
+
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error obteniendo SUBRESOURCE_ID: {ex.Message}");
+                return 0;
+            }
+        }
+
+        // ============== INSERTAR EN MES.TBL_PRODUCTION (historico hora por hora) ==============
+        private async Task InsertarEnTBLProductionAsync(int subresourceId, int catId, int cantidad)
+        {
+            try
+            {
+                using (SqlConnection conn = new SqlConnection(connectionStringMES))
+                {
+                    await conn.OpenAsync();
+
+                    string query = @"
+                    INSERT INTO MES.TBL_PRODUCTION 
+                    (SUBRESOURCE_ID, CATID, QTY, TIMESTAMP)
+                    VALUES (@subresource_id, @catid, @qty, @timestamp)";
+
+                    using (SqlCommand cmd = new SqlCommand(query, conn))
+                    {
+                        cmd.Parameters.AddWithValue("@subresource_id", subresourceId > 0 ? (object)subresourceId : DBNull.Value);
+                        cmd.Parameters.AddWithValue("@catid", catId);
+                        cmd.Parameters.AddWithValue("@qty", cantidad);
+                        cmd.Parameters.AddWithValue("@timestamp", DateTime.Now);
+
+                        int rows = await cmd.ExecuteNonQueryAsync();
+                        System.Diagnostics.Debug.WriteLine($"Insertado en MES.TBL_PRODUCTION: SubresourceId={subresourceId}, CATID={catId}, QTY={cantidad}, Filas={rows}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error en MES.TBL_PRODUCTION: {ex.Message}");
+                throw;
+            }
+        }
+
+        // ============== GUARDAR EN TABLA EXISTENTE TBL_MES_MARS_lASER ==============
+        private async Task GuardarEnTablaLaserAsync(int cantidad)
+        {
+            try
+            {
+                using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
+                {
+                    await conn.OpenAsync();
+
+                    string createTable = @"
+                    IF NOT EXISTS (SELECT * FROM sys.objects WHERE name = 'TBL_MES_MARS_lASER' AND type = 'U')
+                    CREATE TABLE TBL_MES_MARS_lASER (
+                        ID INT IDENTITY(1,1) PRIMARY KEY,
+                        CAT_ID NVARCHAR(50) NULL,
+                        RESOURCE NVARCHAR(200) NULL,
+                        DATATIME DATETIME NULL,
+                        [COUNT] INT NULL
+                    )";
+
+                    using (SqlCommand cmd = new SqlCommand(createTable, conn))
+                    {
+                        await cmd.ExecuteNonQueryAsync();
+                    }
+
+                    string insertSql = @"
+                    INSERT INTO TBL_MES_MARS_lASER (CAT_ID, RESOURCE, DATATIME, [COUNT])
+                    VALUES (@cat_id, @resource, @datatime, @count)";
+
+                    using (SqlCommand cmd = new SqlCommand(insertSql, conn))
+                    {
+                        cmd.Parameters.AddWithValue("@cat_id", catIdSeleccionado);
+                        cmd.Parameters.AddWithValue("@resource", recursoSeleccionado);
+                        cmd.Parameters.AddWithValue("@datatime", DateTime.Now);
+                        cmd.Parameters.AddWithValue("@count", cantidad);
+
+                        await cmd.ExecuteNonQueryAsync();
+                        System.Diagnostics.Debug.WriteLine($"Insertado en TBL_MES_MARS_lASER: CAT_ID={catIdSeleccionado}, Recurso={recursoSeleccionado}, Cantidad={cantidad}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error en TBL_MES_MARS_lASER: {ex.Message}");
+                throw;
+            }
+        }
+
         private async Task BuscarCNCAsync()
         {
             string cncABuscar = txtBuscarCNC.Text;
-            if (cncABuscar == "Ingrese código CNC..." || string.IsNullOrWhiteSpace(cncABuscar))
+            if (cncABuscar == "Ingrese codigo CNC..." || string.IsNullOrWhiteSpace(cncABuscar))
             {
-                MostrarNotificacion("Ingrese un código CNC válido", Color.Orange);
+                MostrarNotificacion("Ingrese un codigo CNC valido", Color.Orange);
                 return;
             }
 
             if (isLoading) return;
-            isLoading = true;
 
-            MostrarCargando(true, $"Buscando CNC: {cncABuscar}...");
-
+            await semaphore.WaitAsync();
             try
             {
+                isLoading = true;
+                MostrarCargando(true, $"Buscando CNC: {cncABuscar}...");
+
                 string queryNestings = @"
-                SELECT 
-                    NstRef,
-                    Name as Nombre,
-                    Quantity as Cantidad_Programada,
-                    ISNULL(CutQuantity, 0) as Cantidad_Reportada,
-                    ISNULL(Quantity, 0) - ISNULL(CutQuantity, 0) as Cantidad_Pendiente,
-                    CuttingStatus as Estado
+                SELECT NstRef, Name as Nombre, Quantity as Cantidad_Programada, 
+                       ISNULL(CutQuantity, 0) as Cantidad_Reportada,
+                       ISNULL(Quantity, 0) - ISNULL(CutQuantity, 0) as Cantidad_Pendiente,
+                       CuttingStatus as Estado
                 FROM [MartinRea MJ].[dbo].[DIS_NEST_NEST_00000100]
                 WHERE CNC = @cnc
                 ORDER BY Name";
@@ -696,12 +874,12 @@ namespace LaserCuttingApp
                 {
                     nestingsActuales.Add(new NestingInfo
                     {
-                        NstRef = row["NstRef"].ToString(),
-                        Nombre = row["Nombre"].ToString(),
+                        NstRef = row["NstRef"].ToString() ?? "",
+                        Nombre = row["Nombre"].ToString() ?? "",
                         CantidadProgramada = Convert.ToInt32(row["Cantidad_Programada"]),
                         CantidadReportada = Convert.ToInt32(row["Cantidad_Reportada"]),
                         CantidadPendiente = Convert.ToInt32(row["Cantidad_Pendiente"]),
-                        Estado = row["Estado"].ToString()
+                        Estado = row["Estado"].ToString() ?? ""
                     });
                 }
 
@@ -709,14 +887,10 @@ namespace LaserCuttingApp
                 lblCNCSeleccionado.Text = $"CNC: {cncSeleccionado}";
                 CrearBotonesNestings();
 
-                if (nestingsActuales.Count == 0)
-                {
-                    MostrarNotificacion($"No se encontraron nestings para el CNC: {cncABuscar}", Color.Orange);
-                }
-                else
-                {
-                    MostrarNotificacion($"Se encontraron {nestingsActuales.Count} nestings para el CNC: {cncABuscar}", Color.Green);
-                }
+                MostrarNotificacion(nestingsActuales.Count == 0
+                    ? $"No se encontraron nestings para el CNC: {cncABuscar}"
+                    : $"Se encontraron {nestingsActuales.Count} nestings",
+                    nestingsActuales.Count == 0 ? Color.Orange : Color.Green);
             }
             catch (Exception ex)
             {
@@ -726,29 +900,24 @@ namespace LaserCuttingApp
             {
                 isLoading = false;
                 MostrarCargando(false);
+                semaphore.Release();
             }
         }
 
         private async Task CargarPartesPorNestingAsync(string nstRef, string nestingNombre)
         {
             if (isLoading) return;
-            isLoading = true;
 
-            MostrarCargando(true, "Cargando partes...");
-
+            await semaphore.WaitAsync();
             try
             {
-                // Buscar en DIS_NEST_NEST_00000500 para obtener las partes con su cantidad
+                isLoading = true;
+                MostrarCargando(true, "Cargando partes...");
+
                 string query = @"
-                SELECT 
-                    MnORef,
-                    OprID,
-                    PrdRefDst,
-                    Quantity
+                SELECT MnORef, OprID, PrdRefDst, Quantity
                 FROM [MartinRea MJ].[dbo].[DIS_NEST_NEST_00000500]
-                WHERE NstRef = @nstRef
-                AND PrdRefDst IS NOT NULL
-                AND PrdRefDst != ''
+                WHERE NstRef = @nstRef AND PrdRefDst IS NOT NULL AND PrdRefDst != ''
                 ORDER BY PrdRefDst";
 
                 DataTable dt = new DataTable();
@@ -771,19 +940,14 @@ namespace LaserCuttingApp
                 partesActuales.Clear();
                 foreach (DataRow row in dt.Rows)
                 {
-                    string mnORef = row["MnORef"].ToString();
-                    string oprID = row["OprID"].ToString();
-                    string prdRefDst = row["PrdRefDst"].ToString();
-                    int cantidad = Convert.ToInt32(row["Quantity"]);
-
                     partesActuales.Add(new ParteInfo
                     {
-                        MnORef = mnORef,
-                        OprID = oprID,
-                        PrdRefDst = prdRefDst,
-                        Recurso = nestingNombre,
-                        Cantidad = cantidad,
-                        NstRef = nstRef
+                        MnORef = row["MnORef"].ToString() ?? "",
+                        OprID = row["OprID"].ToString() ?? "",
+                        PrdRefDst = row["PrdRefDst"].ToString() ?? "",
+                        Cantidad = Convert.ToInt32(row["Quantity"]),
+                        NstRef = nstRef,
+                        Recurso = nestingNombre
                     });
                 }
 
@@ -791,14 +955,10 @@ namespace LaserCuttingApp
                 lblNestingSeleccionado.Text = $"Nesting: {nestingSeleccionado}";
                 CrearBotonesPartes();
 
-                if (partesActuales.Count == 0)
-                {
-                    MostrarNotificacion($"No se encontraron partes para el nesting: {nestingNombre}", Color.Orange);
-                }
-                else
-                {
-                    MostrarNotificacion($"Se encontraron {partesActuales.Count} partes para el nesting: {nestingNombre}", Color.Green);
-                }
+                MostrarNotificacion(partesActuales.Count == 0
+                    ? $"No se encontraron partes"
+                    : $"Se encontraron {partesActuales.Count} partes",
+                    partesActuales.Count == 0 ? Color.Orange : Color.Green);
             }
             catch (Exception ex)
             {
@@ -808,6 +968,7 @@ namespace LaserCuttingApp
             {
                 isLoading = false;
                 MostrarCargando(false);
+                semaphore.Release();
             }
         }
 
@@ -815,13 +976,20 @@ namespace LaserCuttingApp
         {
             try
             {
-                // Obtener información del nesting para mostrar programado/reportado/pendiente
+                RecursoInfo recursoInfo = await ObtenerRecursoDesdeTablaAsync(parte.PrdRefDst);
+
+                catIdSeleccionado = recursoInfo.CAT_ID;
+
+                if (lblCatIdValor != null)
+                {
+                    lblCatIdValor.Text = catIdSeleccionado;
+                    lblCatIdValor.ForeColor = catIdSeleccionado != "0" ? Color.Green : Color.Gray;
+                }
+
                 string queryNesting = @"
-                SELECT 
-                    Name as Recurso,
-                    Quantity as Cantidad_Programada,
-                    ISNULL(CutQuantity, 0) as Cantidad_Reportada,
-                    ISNULL(Quantity, 0) - ISNULL(CutQuantity, 0) as Cantidad_Pendiente
+                SELECT Name as Recurso, Quantity as Cantidad_Programada, 
+                       ISNULL(CutQuantity, 0) as Cantidad_Reportada,
+                       ISNULL(Quantity, 0) - ISNULL(CutQuantity, 0) as Cantidad_Pendiente
                 FROM [MartinRea MJ].[dbo].[DIS_NEST_NEST_00000100]
                 WHERE NstRef = @nstRef";
 
@@ -845,78 +1013,85 @@ namespace LaserCuttingApp
                 if (dtNesting.Rows.Count > 0)
                 {
                     DataRow row = dtNesting.Rows[0];
-                    recursoSeleccionado = row["Recurso"].ToString();
+
+                    if (recursoInfo.Recurso != "No especificado" && recursoInfo.Recurso != "Error")
+                    {
+                        recursoSeleccionado = recursoInfo.Recurso;
+                        lblRecursoSeleccionado.Text = string.IsNullOrEmpty(recursoInfo.Descripcion)
+                            ? $"Recurso: {recursoSeleccionado}"
+                            : $"Recurso: {recursoSeleccionado} - {recursoInfo.Descripcion}";
+                    }
+                    else
+                    {
+                        recursoSeleccionado = row["Recurso"].ToString() ?? "";
+                        lblRecursoSeleccionado.Text = $"Recurso: {recursoSeleccionado}";
+                    }
+
                     cantidadProgramadaNesting = Convert.ToInt32(row["Cantidad_Programada"]);
                     cantidadReportadaNesting = Convert.ToInt32(row["Cantidad_Reportada"]);
                     cantidadPendienteNesting = Convert.ToInt32(row["Cantidad_Pendiente"]);
-
                     nstRefActual = parte.NstRef;
                     mnORefActual = parte.MnORef;
                     parteSeleccionada = parte.PrdRefDst;
                     cantidadProduccionActual = parte.Cantidad;
 
-                    // Actualizar labels
-                    lblRecursoSeleccionado.Text = $"Recurso: {recursoSeleccionado}";
                     lblParteSeleccionada.Text = $"Parte: {parteSeleccionada}";
 
-                    // Buscar el label de Job
                     Control[] controls = panelPrincipal.Controls.Find("lblJobValor", true);
-                    if (controls.Length > 0)
-                    {
-                        ((Label)controls[0]).Text = $"{parte.MnORef} / {parte.OprID}";
-                    }
+                    if (controls.Length > 0 && controls[0] is Label lblJob)
+                        lblJob.Text = $"{parte.MnORef} / {parte.OprID}";
 
-                    lblNstRefValor.Text = nstRefActual;
-                    lblCantidadInfo.Text = $"Nesting - Programado: {cantidadProgramadaNesting:N0} | Reportado: {cantidadReportadaNesting:N0} | Pendiente: {cantidadPendienteNesting:N0}";
-
-                    // Establecer la cantidad de producción en el TextBox
+                    lblNstRefValor.Text = $"NstRef: {nstRefActual}";
+                    lblCantidadInfo.Text = $"Programado: {cantidadProgramadaNesting:N0} | Reportado: {cantidadReportadaNesting:N0} | Pendiente: {cantidadPendienteNesting:N0}";
                     txtCantidad.Text = cantidadProduccionActual.ToString("N0");
                     txtCantidad.ForeColor = cantidadProduccionActual > 0 ? Color.Green : Color.Gray;
 
-                    btnReportar.Enabled = cantidadProduccionActual > 0;
-                    btnActualizar.Enabled = true;
+                    btnReportar.Enabled = cantidadProduccionActual > 0 && catIdSeleccionado != "0";
+
+                    if (catIdSeleccionado == "0")
+                    {
+                        MostrarNotificacion($"La parte '{parteSeleccionada}' no tiene CAT_ID asignado en capability", Color.Orange);
+                    }
                 }
             }
             catch (Exception ex)
             {
-                MostrarNotificacion($"Error al obtener información: {ex.Message}", Color.Red);
+                MostrarNotificacion($"Error al obtener informacion: {ex.Message}", Color.Red);
             }
         }
 
-        // ============== CREACIÓN DE BOTONES ==============
-
         private void CrearBotonesNestings()
         {
+            panelNestings.SuspendLayout();
             panelNestings.Controls.Clear();
 
             foreach (var nesting in nestingsActuales)
             {
-                string estadoIcono = nesting.Estado == "Completado" ? "✅" : (nesting.CantidadPendiente > 0 ? "📋" : "⚪");
-                string texto = $"{estadoIcono} {nesting.Nombre}\nPendiente: {nesting.CantidadPendiente:N0}";
-
+                string estadoTexto = nesting.Estado == "Completado" ? "[Completado]" : (nesting.CantidadPendiente > 0 ? "[Pendiente]" : "[Finalizado]");
                 Button btnNesting = new Button
                 {
-                    Text = texto,
+                    Text = $"{estadoTexto} {nesting.Nombre}\nPendiente: {nesting.CantidadPendiente:N0}",
                     Font = new Font("Arial", 9, FontStyle.Bold),
                     BackColor = Color.White,
-                    ForeColor = Color.Black,
                     Size = new Size(385, 55),
                     FlatStyle = FlatStyle.Flat,
                     Cursor = Cursors.Hand,
                     Margin = new Padding(3),
                     TextAlign = ContentAlignment.MiddleLeft,
-                    Tag = nesting
+                    Tag = nesting,
+                    UseVisualStyleBackColor = true
                 };
                 btnNesting.FlatAppearance.BorderSize = 1;
                 btnNesting.FlatAppearance.BorderColor = colorBorde;
                 btnNesting.Click += BtnNesting_Click;
-
                 panelNestings.Controls.Add(btnNesting);
             }
+            panelNestings.ResumeLayout();
         }
 
         private void CrearBotonesPartes()
         {
+            panelPartes.SuspendLayout();
             panelPartes.Controls.Clear();
 
             int index = 1;
@@ -927,95 +1102,109 @@ namespace LaserCuttingApp
                     Text = $"{index:00}. {parte.PrdRefDst}\nCantidad: {parte.Cantidad:N0}",
                     Font = new Font("Arial", 9, FontStyle.Bold),
                     BackColor = Color.White,
-                    ForeColor = Color.Black,
                     Size = new Size(385, 55),
                     FlatStyle = FlatStyle.Flat,
                     Cursor = Cursors.Hand,
                     Margin = new Padding(3),
                     TextAlign = ContentAlignment.MiddleLeft,
-                    Tag = parte
+                    Tag = parte,
+                    UseVisualStyleBackColor = true
                 };
                 btnParte.FlatAppearance.BorderSize = 1;
                 btnParte.FlatAppearance.BorderColor = colorBorde;
                 btnParte.Click += BtnParte_Click;
-
                 panelPartes.Controls.Add(btnParte);
                 index++;
             }
+            panelPartes.ResumeLayout();
         }
-
-        // ============== EVENTOS ==============
 
         private async void BtnNesting_Click(object sender, EventArgs e)
         {
-            Button btn = (Button)sender;
-            NestingInfo nesting = (NestingInfo)btn.Tag;
-
-            if (nestingSeleccionadoBtn != null)
+            if (sender is Button btn && btn.Tag is NestingInfo nesting)
             {
-                nestingSeleccionadoBtn.BackColor = Color.White;
-                nestingSeleccionadoBtn.ForeColor = Color.Black;
+                if (nestingSeleccionadoBtn != null)
+                {
+                    nestingSeleccionadoBtn.BackColor = Color.White;
+                    nestingSeleccionadoBtn.ForeColor = Color.Black;
+                }
+
+                btn.BackColor = colorSeleccionado;
+                btn.ForeColor = Color.White;
+                nestingSeleccionadoBtn = btn;
+
+                if (parteSeleccionadaBtn != null)
+                {
+                    parteSeleccionadaBtn.BackColor = Color.White;
+                    parteSeleccionadaBtn.ForeColor = Color.Black;
+                    parteSeleccionadaBtn = null;
+                }
+
+                LimpiarSeleccionParte();
+                await CargarPartesPorNestingAsync(nesting.NstRef, nesting.Nombre);
             }
-
-            btn.BackColor = colorSeleccionado;
-            btn.ForeColor = Color.White;
-            nestingSeleccionadoBtn = btn;
-
-            if (parteSeleccionadaBtn != null)
-            {
-                parteSeleccionadaBtn.BackColor = Color.White;
-                parteSeleccionadaBtn.ForeColor = Color.Black;
-                parteSeleccionadaBtn = null;
-            }
-
-            lblParteSeleccionada.Text = "Parte: --";
-            lblRecursoSeleccionado.Text = "Recurso: --";
-            lblNstRefValor.Text = "--";
-            lblCantidadInfo.Text = "Nesting - Programado: 0 | Reportado: 0 | Pendiente: 0";
-            parteSeleccionada = "";
-            recursoSeleccionado = "";
-            nstRefActual = "";
-            txtCantidad.Text = "0";
-            btnReportar.Enabled = false;
-            btnActualizar.Enabled = false;
-
-            await CargarPartesPorNestingAsync(nesting.NstRef, nesting.Nombre);
         }
 
         private async void BtnParte_Click(object sender, EventArgs e)
         {
-            Button btn = (Button)sender;
-            ParteInfo parte = (ParteInfo)btn.Tag;
-
-            if (parteSeleccionadaBtn != null)
+            if (sender is Button btn && btn.Tag is ParteInfo parte)
             {
-                parteSeleccionadaBtn.BackColor = Color.White;
-                parteSeleccionadaBtn.ForeColor = Color.Black;
+                if (parteSeleccionadaBtn != null)
+                {
+                    parteSeleccionadaBtn.BackColor = Color.White;
+                    parteSeleccionadaBtn.ForeColor = Color.Black;
+                }
+
+                btn.BackColor = colorSeleccionado;
+                btn.ForeColor = Color.White;
+                parteSeleccionadaBtn = btn;
+
+                await ActualizarInfoParteAsync(parte);
             }
-
-            btn.BackColor = colorSeleccionado;
-            btn.ForeColor = Color.White;
-            parteSeleccionadaBtn = btn;
-
-            await ActualizarInfoParteAsync(parte);
         }
 
-        // ============== MÉTODOS DE REPORTE ==============
+        private void LimpiarSeleccionParte()
+        {
+            lblParteSeleccionada.Text = "Parte: --";
+            lblRecursoSeleccionado.Text = "Recurso: --";
+            if (lblCatIdValor != null) lblCatIdValor.Text = "--";
+            lblNstRefValor.Text = "NstRef: --";
+            lblCantidadInfo.Text = "Programado: 0 | Reportado: 0 | Pendiente: 0";
+            parteSeleccionada = "";
+            recursoSeleccionado = "";
+            catIdSeleccionado = "0";
+            nstRefActual = "";
+            txtCantidad.Text = "0";
+            btnReportar.Enabled = false;
+
+            Control[] controls = panelPrincipal.Controls.Find("lblJobValor", true);
+            if (controls.Length > 0 && controls[0] is Label lblJob)
+                lblJob.Text = "--";
+
+            panelPartes.Controls.Clear();
+        }
 
         private int ObtenerCantidadIngresada()
         {
-            if (string.IsNullOrEmpty(txtCantidad.Text))
-                return 0;
-
-            string valorLimpio = txtCantidad.Text.Replace(",", "");
-            return int.TryParse(valorLimpio, out int resultado) ? resultado : 0;
+            if (string.IsNullOrEmpty(txtCantidad.Text)) return 0;
+            return int.TryParse(txtCantidad.Text.Replace(",", ""), out int resultado) ? resultado : 0;
         }
 
+        // ============== METODO PRINCIPAL: REPORTAR PRODUCCION ==============
+        // Guarda EN AMBAS TABLAS:
+        // 1. TBL_MES_MARS_lASER (tabla original del laser)
+        // 2. MES.TBL_PRODUCTION (historico hora por hora)
         private async Task ReportarProduccionAsync()
         {
             if (string.IsNullOrEmpty(nstRefActual))
             {
-                MostrarNotificacion("No se encontró información para esta parte", Color.Red);
+                MostrarNotificacion("No se encontro informacion para esta parte", Color.Red);
+                return;
+            }
+
+            if (catIdSeleccionado == "0" || string.IsNullOrEmpty(catIdSeleccionado))
+            {
+                MostrarNotificacion("La parte seleccionada no tiene un CAT_ID valido en capability", Color.Red);
                 return;
             }
 
@@ -1028,66 +1217,36 @@ namespace LaserCuttingApp
             }
 
             DialogResult result = MessageBox.Show(
-                $"¿Confirmar reporte de {cantidadReportar:N0} piezas?\n\n" +
+                $"Confirmar reporte de {cantidadReportar:N0} piezas?\n\n" +
                 $"CNC: {cncSeleccionado}\n" +
                 $"Nesting: {nestingSeleccionado}\n" +
                 $"Recurso: {recursoSeleccionado}\n" +
                 $"Parte: {parteSeleccionada}\n" +
-                $"JOB: {mnORefActual}\n" +
-                $"Cantidad de producción: {cantidadProduccionActual:N0}",
+                $"CAT_ID: {catIdSeleccionado}\n" +
+                $"JOB: {mnORefActual}",
                 "Confirmar Reporte",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question);
 
             if (result == DialogResult.Yes)
             {
+                await semaphore.WaitAsync();
                 try
                 {
                     btnReportar.Enabled = false;
                     btnReportar.Text = "PROCESANDO...";
 
-                    await Task.Run(() =>
-                    {
-                        // Actualizar CutQuantity en la tabla 00000100
-                        string queryUpdate = @"
-                        UPDATE [MartinRea MJ].[dbo].[DIS_NEST_NEST_00000100]
-                        SET 
-                            CutQuantity = ISNULL(CutQuantity, 0) + @cantidad,
-                            CuttingStatus = CASE 
-                                WHEN ISNULL(Quantity, 0) <= (ISNULL(CutQuantity, 0) + @cantidad) THEN 'Completado'
-                                ELSE 'En Proceso'
-                            END,
-                            LastDate = GETDATE(),
-                            LastUser = @usuario
-                        WHERE NstRef = @nstRef";
+                    // 1. Guardar en tabla original del laser (TBL_MES_MARS_lASER)
+                    await GuardarEnTablaLaserAsync(cantidadReportar);
 
-                        using (SqlConnection conn = new SqlConnection(connectionStringMartinRea))
-                        {
-                            using (SqlCommand cmd = new SqlCommand(queryUpdate, conn))
-                            {
-                                cmd.Parameters.AddWithValue("@cantidad", cantidadReportar);
-                                cmd.Parameters.AddWithValue("@nstRef", nstRefActual);
-                                cmd.Parameters.AddWithValue("@usuario", Environment.UserName);
-                                conn.Open();
-                                cmd.ExecuteNonQuery();
-                            }
-                        }
-                    });
+                    // 2. Obtener SUBRESOURCE_ID para MES.TBL_PRODUCTION
+                    int subresourceId = await ObtenerSubresourceIdAsync(recursoSeleccionado);
 
-                    MostrarNotificacion($"✓ Reporte exitoso: {cantidadReportar:N0} piezas", Color.Green);
-                    await RegistrarLogReporteAsync(cantidadReportar);
+                    // 3. Insertar en MES.TBL_PRODUCTION (historico hora por hora)
+                    int catIdInt = int.Parse(catIdSeleccionado);
+                    await InsertarEnTBLProductionAsync(subresourceId, catIdInt, cantidadReportar);
 
-                    // Recargar información actualizada
-                    await BuscarCNCAsync();
-
-                    if (!string.IsNullOrEmpty(nstRefActual))
-                    {
-                        var parte = partesActuales.FirstOrDefault(p => p.PrdRefDst == parteSeleccionada);
-                        if (parte != null)
-                        {
-                            await ActualizarInfoParteAsync(parte);
-                        }
-                    }
+                    MostrarNotificacion($"Reporte exitoso: {cantidadReportar:N0} piezas\nGuardado en TBL_MES_MARS_lASER\nGuardado en MES.TBL_PRODUCTION", Color.Green);
                 }
                 catch (Exception ex)
                 {
@@ -1095,165 +1254,19 @@ namespace LaserCuttingApp
                 }
                 finally
                 {
-                    btnReportar.Text = "REPORTAR PRODUCCIÓN";
+                    btnReportar.Text = "REPORTAR PRODUCCION";
                     btnReportar.Enabled = true;
+                    semaphore.Release();
                 }
             }
-        }
-
-        private async Task ActualizarCantidadProgramadaNestingAsync()
-        {
-            if (string.IsNullOrEmpty(nstRefActual))
-            {
-                MostrarNotificacion("No se encontró información para este nesting", Color.Red);
-                return;
-            }
-
-            int nuevaCantidad = ObtenerCantidadIngresada();
-
-            if (nuevaCantidad <= 0)
-            {
-                MostrarNotificacion("La cantidad debe ser mayor a 0", Color.Red);
-                return;
-            }
-
-            DialogResult result = MessageBox.Show(
-                $"¿Actualizar cantidad programada del nesting a {nuevaCantidad:N0} piezas?\n\n" +
-                $"Nesting: {nestingSeleccionado}\n" +
-                $"NstRef: {nstRefActual}",
-                "Confirmar Actualización",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning);
-
-            if (result == DialogResult.Yes)
-            {
-                try
-                {
-                    btnActualizar.Enabled = false;
-                    btnActualizar.Text = "PROCESANDO...";
-
-                    await Task.Run(() =>
-                    {
-                        string query = @"
-                        UPDATE [MartinRea MJ].[dbo].[DIS_NEST_NEST_00000100]
-                        SET 
-                            Quantity = @nuevaCantidad,
-                            LastDate = GETDATE(),
-                            LastUser = @usuario
-                        WHERE NstRef = @nstRef";
-
-                        using (SqlConnection conn = new SqlConnection(connectionStringMartinRea))
-                        {
-                            using (SqlCommand cmd = new SqlCommand(query, conn))
-                            {
-                                cmd.Parameters.AddWithValue("@nuevaCantidad", nuevaCantidad);
-                                cmd.Parameters.AddWithValue("@nstRef", nstRefActual);
-                                cmd.Parameters.AddWithValue("@usuario", Environment.UserName);
-                                conn.Open();
-                                cmd.ExecuteNonQuery();
-                            }
-                        }
-                    });
-
-                    MostrarNotificacion($"✓ Cantidad programada actualizada a {nuevaCantidad:N0}", Color.Green);
-                    await BuscarCNCAsync();
-
-                    if (!string.IsNullOrEmpty(nstRefActual))
-                    {
-                        var parte = partesActuales.FirstOrDefault(p => p.PrdRefDst == parteSeleccionada);
-                        if (parte != null)
-                        {
-                            await ActualizarInfoParteAsync(parte);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    MostrarNotificacion($"Error al actualizar: {ex.Message}", Color.Red);
-                }
-                finally
-                {
-                    btnActualizar.Text = "ACTUALIZAR CANTIDAD PROGRAMADA DEL NESTING";
-                    btnActualizar.Enabled = true;
-                }
-            }
-        }
-
-        private async Task RegistrarLogReporteAsync(int cantidad)
-        {
-            await Task.Run(() =>
-            {
-                try
-                {
-                    string createTableQuery = @"
-                    IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='ReportesProduccionLaser' AND xtype='U')
-                    CREATE TABLE ReportesProduccionLaser (
-                        ID INT IDENTITY(1,1) PRIMARY KEY,
-                        CNC NVARCHAR(50),
-                        NstRef NVARCHAR(100),
-                        Nesting NVARCHAR(200),
-                        Recurso NVARCHAR(200),
-                        Parte NVARCHAR(200),
-                        MnORef NVARCHAR(100),
-                        OprID NVARCHAR(50),
-                        CantidadReportada INT,
-                        CantidadProduccion INT,
-                        FechaReporte DATETIME,
-                        Usuario NVARCHAR(100),
-                        Observaciones NVARCHAR(500)
-                    )";
-
-                    using (SqlConnection conn = new SqlConnection(connectionStringMartinRea))
-                    {
-                        conn.Open();
-                        using (SqlCommand cmdCreate = new SqlCommand(createTableQuery, conn))
-                        {
-                            cmdCreate.ExecuteNonQuery();
-                        }
-                    }
-
-                    string query = @"
-                    INSERT INTO ReportesProduccionLaser 
-                    (CNC, NstRef, Nesting, Recurso, Parte, MnORef, OprID, CantidadReportada, CantidadProduccion, FechaReporte, Usuario, Observaciones)
-                    VALUES (@cnc, @nstRef, @nesting, @recurso, @parte, @mnORef, @oprID, @cantidad, @cantidadProduccion, GETDATE(), @usuario, @observaciones)";
-
-                    using (SqlConnection conn = new SqlConnection(connectionStringMartinRea))
-                    {
-                        using (SqlCommand cmd = new SqlCommand(query, conn))
-                        {
-                            cmd.Parameters.AddWithValue("@cnc", cncSeleccionado);
-                            cmd.Parameters.AddWithValue("@nstRef", nstRefActual);
-                            cmd.Parameters.AddWithValue("@nesting", nestingSeleccionado);
-                            cmd.Parameters.AddWithValue("@recurso", recursoSeleccionado);
-                            cmd.Parameters.AddWithValue("@parte", parteSeleccionada);
-                            cmd.Parameters.AddWithValue("@mnORef", mnORefActual);
-                            cmd.Parameters.AddWithValue("@oprID", "");
-                            cmd.Parameters.AddWithValue("@cantidad", cantidad);
-                            cmd.Parameters.AddWithValue("@cantidadProduccion", cantidadProduccionActual);
-                            cmd.Parameters.AddWithValue("@usuario", Environment.UserName);
-                            cmd.Parameters.AddWithValue("@observaciones", "Reporte desde aplicación láser");
-                            conn.Open();
-                            cmd.ExecuteNonQuery();
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"Error en log: {ex.Message}");
-                }
-            });
         }
 
         private async Task RefrescarDatosAsync()
         {
             if (!string.IsNullOrEmpty(cncSeleccionado))
-            {
                 await BuscarCNCAsync();
-            }
             else
-            {
                 MostrarNotificacion("Primero busque un CNC", Color.Orange);
-            }
         }
 
         private void LimpiarSeleccion()
@@ -1274,54 +1287,46 @@ namespace LaserCuttingApp
             nestingSeleccionado = "";
             parteSeleccionada = "";
             recursoSeleccionado = "";
+            catIdSeleccionado = "0";
             nstRefActual = "";
             mnORefActual = "";
             cantidadProduccionActual = 0;
-            cantidadPendienteNesting = 0;
 
             lblNestingSeleccionado.Text = "Nesting: --";
             lblParteSeleccionada.Text = "Parte: --";
             lblRecursoSeleccionado.Text = "Recurso: --";
-            lblNstRefValor.Text = "--";
-            lblCantidadInfo.Text = "Nesting - Programado: 0 | Reportado: 0 | Pendiente: 0";
+            if (lblCatIdValor != null) lblCatIdValor.Text = "--";
+            lblNstRefValor.Text = "NstRef: --";
+            lblCantidadInfo.Text = "Programado: 0 | Reportado: 0 | Pendiente: 0";
             txtCantidad.Text = "0";
             btnReportar.Enabled = false;
-            btnActualizar.Enabled = false;
-            lblCantidadTitulo.Text = "CANTIDAD A REPORTAR (Quantity de la parte)";
 
-            // Limpiar Job label
             Control[] controls = panelPrincipal.Controls.Find("lblJobValor", true);
-            if (controls.Length > 0)
-            {
-                ((Label)controls[0]).Text = "--";
-            }
+            if (controls.Length > 0 && controls[0] is Label lblJob)
+                lblJob.Text = "--";
 
             panelPartes.Controls.Clear();
         }
 
         private void MostrarCargando(bool mostrar, string mensaje = "")
         {
-            if (this.InvokeRequired)
+            if (InvokeRequired)
             {
-                this.Invoke(new Action<bool, string>(MostrarCargando), mostrar, mensaje);
+                Invoke(new Action<bool, string>(MostrarCargando), mostrar, mensaje);
                 return;
             }
 
             lblCargando.Visible = mostrar;
             if (!string.IsNullOrEmpty(mensaje))
-            {
                 lblCargando.Text = mensaje;
-            }
             Application.DoEvents();
         }
 
-        // ============== MÉTODOS DE ESTILO ==============
-
         private void MostrarNotificacion(string mensaje, Color color)
         {
-            if (this.InvokeRequired)
+            if (InvokeRequired)
             {
-                this.Invoke(new Action<string, Color>(MostrarNotificacion), mensaje, color);
+                Invoke(new Action<string, Color>(MostrarNotificacion), mensaje, color);
                 return;
             }
 
@@ -1333,7 +1338,7 @@ namespace LaserCuttingApp
                 BackColor = color,
                 AutoSize = true,
                 Padding = new Padding(10, 5, 10, 5),
-                Location = new Point(this.Width - 350, 80),
+                Location = new Point(this.Width - 650, 80),
                 BorderStyle = BorderStyle.FixedSingle
             };
 
@@ -1341,12 +1346,12 @@ namespace LaserCuttingApp
             lblNotificacion.BringToFront();
 
             Timer timerNotif = new Timer();
-            timerNotif.Interval = 3000;
+            timerNotif.Interval = NOTIFICACION_DURACION_MS;
             timerNotif.Tick += (s, e) =>
             {
-                if (this.InvokeRequired)
+                if (InvokeRequired)
                 {
-                    this.Invoke(new Action(() => {
+                    Invoke(new Action(() => {
                         this.Controls.Remove(lblNotificacion);
                         lblNotificacion.Dispose();
                     }));
@@ -1360,6 +1365,13 @@ namespace LaserCuttingApp
                 timerNotif.Dispose();
             };
             timerNotif.Start();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            semaphore?.Dispose();
+            timerReloj?.Dispose();
+            base.OnFormClosing(e);
         }
     }
 }
