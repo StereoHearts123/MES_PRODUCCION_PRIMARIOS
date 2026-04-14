@@ -99,7 +99,6 @@ namespace LaserCuttingApp
         private Label lblFechaActual;
         private Label lblHoraActual;
         private FlowLayoutPanel panelPartes;
-        private Button btnReportar;
         private Button btnLimpiar;
         private Button btnBorrar;
         private Timer timerReloj;
@@ -241,12 +240,12 @@ namespace LaserCuttingApp
                 Visible = false
             };
 
-            // Panel para botones del PIN PAD - AUMENTAR EL TAMAÑO
+            // Panel para botones del PIN PAD
             Panel panelBotones = new Panel
             {
                 Location = new Point(15, 140),
-                Size = new Size(450, 390), // Cambiado de 200 a 350
-                BackColor = Color.White    // Agregar color de fondo para depuración
+                Size = new Size(450, 390),
+                BackColor = Color.White
             };
 
             // Crear botones del PIN PAD
@@ -388,7 +387,7 @@ namespace LaserCuttingApp
 
             Panel panelInfoTrabajo = new Panel
             {
-                Location = new Point(15,20),
+                Location = new Point(15, 20),
                 Size = new Size(410, 210),
                 BackColor = Color.FromArgb(248, 249, 250),
                 BorderStyle = BorderStyle.FixedSingle
@@ -503,27 +502,12 @@ namespace LaserCuttingApp
                 ReadOnly = true
             };
 
-            btnReportar = new Button
-            {
-                Text = "REPORTAR PRODUCCION",
-                Location = new Point(15, 420),
-                Size = new Size(410, 55),
-                Font = new Font("Arial", 12, FontStyle.Bold),
-                BackColor = colorExito,
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Cursor = Cursors.Hand,
-                Enabled = false
-            };
-            btnReportar.FlatAppearance.BorderSize = 0;
-            btnReportar.Click += async (s, e) => await ReportarProduccionAsync();
-
             btnLimpiar = new Button
             {
                 Text = "LIMPIAR SELECCION",
                 Location = new Point(15, 490),
-                Size = new Size(410, 45),
-                Font = new Font("Arial", 11, FontStyle.Bold),
+                Size = new Size(410, 55),
+                Font = new Font("Arial", 12, FontStyle.Bold),
                 BackColor = colorPeligro,
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
@@ -543,7 +527,7 @@ namespace LaserCuttingApp
             };
 
             panelControl.Controls.AddRange(new Control[] { panelInfoTrabajo, lblCantidadInfo, lblCantidadTitulo,
-                txtCantidad, btnReportar, btnLimpiar, lblCargando });
+                txtCantidad, btnLimpiar, lblCargando });
             panelPrincipal.Controls.Add(panelControl);
         }
 
@@ -552,7 +536,7 @@ namespace LaserCuttingApp
             panelInferior = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 50,    
+                Height = 50,
                 BackColor = Color.FromArgb(240, 240, 240),
                 BorderStyle = BorderStyle.FixedSingle
             };
@@ -898,26 +882,8 @@ namespace LaserCuttingApp
                     lblCNCIngresado.Text = $"CNC: {cncSeleccionado}";
                     lblCNCIngresado.Visible = true;
 
-                    // Crear botones de partes
+                    // Crear botones de partes (sin selección automática)
                     CrearBotonesPartes();
-
-                    // Seleccionar automáticamente la primera parte
-                    if (partesActuales.Count > 0)
-                    {
-                        var primeraParte = partesActuales.First();
-
-                        foreach (Control control in panelPartes.Controls)
-                        {
-                            if (control is Button btn && btn.Tag is ParteInfo parte && parte.PrdRefDst == primeraParte.PrdRefDst)
-                            {
-                                btn.BackColor = colorSeleccionado;
-                                btn.ForeColor = Color.White;
-                                parteSeleccionadaBtn = btn;
-                                await ActualizarInfoParteAsync(primeraParte);
-                                break;
-                            }
-                        }
-                    }
 
                     MostrarNotificacion($"CNC {cnnIngresado} encontrado. {partesActuales.Count} parte(s) cargada(s).", Color.Green);
                 }
@@ -962,14 +928,14 @@ namespace LaserCuttingApp
                 };
                 btnParte.FlatAppearance.BorderSize = 1;
                 btnParte.FlatAppearance.BorderColor = colorBorde;
-                btnParte.Click += BtnParte_Click;
+                btnParte.Click += async (s, e) => await BtnParte_ClickAsync(s, e);
                 panelPartes.Controls.Add(btnParte);
                 index++;
             }
             panelPartes.ResumeLayout();
         }
 
-        private async void BtnParte_Click(object sender, EventArgs e)
+        private async Task BtnParte_ClickAsync(object sender, EventArgs e)
         {
             if (sender is Button btn && btn.Tag is ParteInfo parte)
             {
@@ -983,11 +949,40 @@ namespace LaserCuttingApp
                 btn.ForeColor = Color.White;
                 parteSeleccionadaBtn = btn;
 
-                await ActualizarInfoParteAsync(parte);
+                // Cargar información de la parte
+                await CargarInfoParteAsync(parte);
+
+                // Verificar si se puede reportar y preguntar al usuario
+                if (catIdSeleccionado != "0" && cantidadProduccionActual > 0)
+                {
+                    DialogResult result = MessageBox.Show(
+                        $"¿Reportar {cantidadProduccionActual:N0} piezas para la parte {parte.PrdRefDst}?\n\n" +
+                        $"CNC: {cncSeleccionado}\n" +
+                        $"Trabajo: {nestingSeleccionado}\n" +
+                        $"Recurso: {recursoSeleccionado}\n" +
+                        $"CAT_ID: {catIdSeleccionado}\n" +
+                        $"JOB: {parte.MnORef}",
+                        "Confirmar Reporte Automático",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question);
+
+                    if (result == DialogResult.Yes)
+                    {
+                        await ReportarProduccionAsync(parte.Cantidad);
+                    }
+                }
+                else if (catIdSeleccionado == "0")
+                {
+                    MostrarNotificacion($"La parte '{parte.PrdRefDst}' no tiene CAT_ID asignado. No se puede reportar.", Color.Orange);
+                }
+                else if (cantidadProduccionActual <= 0)
+                {
+                    MostrarNotificacion($"La parte '{parte.PrdRefDst}' tiene cantidad 0 para reportar.", Color.Orange);
+                }
             }
         }
 
-        private async Task ActualizarInfoParteAsync(ParteInfo parte)
+        private async Task CargarInfoParteAsync(ParteInfo parte)
         {
             try
             {
@@ -1062,13 +1057,6 @@ namespace LaserCuttingApp
                     lblCantidadInfo.Text = $"Programado: {cantidadProgramadaNesting:N0} | Reportado: {cantidadReportadaNesting:N0} | Pendiente: {cantidadPendienteNesting:N0}";
                     txtCantidad.Text = cantidadProduccionActual.ToString("N0");
                     txtCantidad.ForeColor = cantidadProduccionActual > 0 ? Color.Green : Color.Gray;
-
-                    btnReportar.Enabled = cantidadProduccionActual > 0 && catIdSeleccionado != "0";
-
-                    if (catIdSeleccionado == "0")
-                    {
-                        MostrarNotificacion($"La parte '{parteSeleccionada}' no tiene CAT_ID asignado", Color.Orange);
-                    }
                 }
             }
             catch (Exception ex)
@@ -1077,13 +1065,7 @@ namespace LaserCuttingApp
             }
         }
 
-        private int ObtenerCantidadIngresada()
-        {
-            if (string.IsNullOrEmpty(txtCantidad.Text)) return 0;
-            return int.TryParse(txtCantidad.Text.Replace(",", ""), out int resultado) ? resultado : 0;
-        }
-
-        private async Task ReportarProduccionAsync()
+        private async Task ReportarProduccionAsync(int cantidadReportar)
         {
             if (string.IsNullOrEmpty(nstRefActual))
             {
@@ -1097,52 +1079,47 @@ namespace LaserCuttingApp
                 return;
             }
 
-            int cantidadReportar = ObtenerCantidadIngresada();
-
             if (cantidadReportar <= 0)
             {
                 MostrarNotificacion("La cantidad debe ser mayor a 0", Color.Red);
                 return;
             }
 
-            DialogResult result = MessageBox.Show(
-                $"Confirmar reporte de {cantidadReportar:N0} piezas?\n\n" +
-                $"CNC: {cncSeleccionado}\n" +
-                $"Trabajo: {nestingSeleccionado}\n" +
-                $"Recurso: {recursoSeleccionado}\n" +
-                $"Parte: {parteSeleccionada}\n" +
-                $"CAT_ID: {catIdSeleccionado}\n" +
-                $"JOB: {mnORefActual}",
-                "Confirmar Reporte",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question);
-
-            if (result == DialogResult.Yes)
+            await semaphore.WaitAsync();
+            try
             {
-                await semaphore.WaitAsync();
-                try
-                {
-                    btnReportar.Enabled = false;
-                    btnReportar.Text = "PROCESANDO...";
+                MostrarCargando(true, "Reportando producción...");
 
-                    await GuardarEnTablaLaserAsync(cantidadReportar);
-                    int subresourceId = await ObtenerSubresourceIdAsync(recursoSeleccionado);
-                    int catIdInt = int.Parse(catIdSeleccionado);
-                    await InsertarEnTBLProductionAsync(subresourceId, catIdInt, cantidadReportar);
+                await GuardarEnTablaLaserAsync(cantidadReportar);
+                int subresourceId = await ObtenerSubresourceIdAsync(recursoSeleccionado);
+                int catIdInt = int.Parse(catIdSeleccionado);
+                await InsertarEnTBLProductionAsync(subresourceId, catIdInt, cantidadReportar);
 
-                    MostrarNotificacion($"Reporte exitoso: {cantidadReportar:N0} piezas", Color.Green);
-                }
-                catch (Exception ex)
+                MostrarNotificacion($"Reporte exitoso: {cantidadReportar:N0} piezas", Color.Green);
+
+                // Recargar datos del CNC para actualizar cantidades
+                if (!string.IsNullOrEmpty(cncSeleccionado))
                 {
-                    MostrarNotificacion($"Error al reportar: {ex.Message}", Color.Red);
-                }
-                finally
-                {
-                    btnReportar.Text = "REPORTAR PRODUCCION";
-                    btnReportar.Enabled = true;
-                    semaphore.Release();
+                    await RecargarDatosCNCAsync();
                 }
             }
+            catch (Exception ex)
+            {
+                MostrarNotificacion($"Error al reportar: {ex.Message}", Color.Red);
+            }
+            finally
+            {
+                MostrarCargando(false);
+                semaphore.Release();
+            }
+        }
+
+        private async Task RecargarDatosCNCAsync()
+        {
+            string cncTemp = cnnIngresado;
+            cnnIngresado = cncSeleccionado;
+            await ConfirmarCNCAsync();
+            cnnIngresado = cncTemp;
         }
 
         private void LimpiarSeleccion()
@@ -1174,7 +1151,6 @@ namespace LaserCuttingApp
             lblNstRefValor.Text = "--";
             lblCantidadInfo.Text = "Programado: 0 | Reportado: 0 | Pendiente: 0";
             txtCantidad.Text = "0";
-            btnReportar.Enabled = false;
             lblCNCIngresado.Visible = false;
 
             Control[] controls = panelPrincipal.Controls.Find("lblJobValor", true);
