@@ -769,39 +769,61 @@ namespace LaserCuttingApp
                 {
                     await conn.OpenAsync();
 
-                    string createTable = @"
-                    IF NOT EXISTS (SELECT * FROM sys.objects WHERE name = 'TBL_MES_MARS_lASER' AND type = 'U')
-                    CREATE TABLE TBL_MES_MARS_lASER (
-                        ID INT IDENTITY(1,1) PRIMARY KEY,
-                        CAT_ID NVARCHAR(50) NULL,
-                        RESOURCE NVARCHAR(200) NULL,
-                        DATATIME DATETIME NULL,
-                        [COUNT] INT NULL
-                    )";
+                    // Verificar si ya existe un registro con el mismo CAT_ID + RESOURCE en el día de hoy
+                    string checkSql = @"
+                SELECT ID FROM TBL_MES_MARS_LASER
+                WHERE CAT_ID = @cat_id
+                  AND RESOURCE = @resource
+                  AND CAST(DATATIME AS DATE) = CAST(GETDATE() AS DATE)";
 
-                    using (SqlCommand cmd = new SqlCommand(createTable, conn))
+                    int? existingId = null;
+
+                    using (SqlCommand cmd = new SqlCommand(checkSql, conn))
                     {
-                        await cmd.ExecuteNonQueryAsync();
+                        cmd.Parameters.AddWithValue("@cat_id", int.Parse(catIdSeleccionado));
+                        cmd.Parameters.AddWithValue("@resource", recursoSeleccionado);
+
+                        object result = await cmd.ExecuteScalarAsync();
+                        if (result != null && result != DBNull.Value)
+                            existingId = Convert.ToInt32(result);
                     }
 
-                    string insertSql = @"
-                    INSERT INTO TBL_MES_MARS_lASER (CAT_ID, RESOURCE, DATATIME, [COUNT])
-                    VALUES (@cat_id, @resource, @datatime, @count)";
-
-                    using (SqlCommand cmd = new SqlCommand(insertSql, conn))
+                    if (existingId.HasValue)
                     {
-                        cmd.Parameters.AddWithValue("@cat_id", catIdSeleccionado);
-                        cmd.Parameters.AddWithValue("@resource", recursoSeleccionado);
-                        cmd.Parameters.AddWithValue("@datatime", DateTime.Now);
-                        cmd.Parameters.AddWithValue("@count", cantidad);
+                        // Ya existe -> sumar al COUNT existente
+                        string updateSql = @"
+                    UPDATE TBL_MES_MARS_LASER
+                    SET [COUNT] = [COUNT] + @cantidad,
+                        DATATIME = GETDATE()
+                    WHERE ID = @id";
 
-                        await cmd.ExecuteNonQueryAsync();
+                        using (SqlCommand cmd = new SqlCommand(updateSql, conn))
+                        {
+                            cmd.Parameters.AddWithValue("@cantidad", cantidad);
+                            cmd.Parameters.AddWithValue("@id", existingId.Value);
+                            await cmd.ExecuteNonQueryAsync();
+                        }
+                    }
+                    else
+                    {
+                        // No existe -> insertar nuevo registro
+                        string insertSql = @"
+                    INSERT INTO TBL_MES_MARS_LASER (CAT_ID, RESOURCE, DATATIME, [COUNT])
+                    VALUES (@cat_id, @resource, GETDATE(), @count)";
+
+                        using (SqlCommand cmd = new SqlCommand(insertSql, conn))
+                        {
+                            cmd.Parameters.AddWithValue("@cat_id", int.Parse(catIdSeleccionado));
+                            cmd.Parameters.AddWithValue("@resource", recursoSeleccionado);
+                            cmd.Parameters.AddWithValue("@count", cantidad);
+                            await cmd.ExecuteNonQueryAsync();
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Error en TBL_MES_MARS_lASER: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error en TBL_MES_MARS_LASER: {ex.Message}");
                 throw;
             }
         }
