@@ -102,6 +102,7 @@ namespace LaserCuttingApp
         private Button btnLimpiar;
         private Button btnBorrar;
         private Timer timerReloj;
+        private System.Windows.Forms.Timer timerVerificacionConexion;
         private Label lblCargando;
         private TextBox txtCantidad;
         private Label lblCantidadTitulo;
@@ -151,6 +152,7 @@ namespace LaserCuttingApp
             this.MinimizeBox = true;
             this.Size = new Size(1366, 800);
             this.StartPosition = FormStartPosition.CenterScreen;
+            this.ControlBox = true;
         }
 
         private void ConfigurarInterfaz()
@@ -536,9 +538,18 @@ namespace LaserCuttingApp
             panelInferior = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 50,
+                Height = 60,
                 BackColor = Color.FromArgb(240, 240, 240),
                 BorderStyle = BorderStyle.FixedSingle
+            };
+
+            // Panel indicador de conexión (círculo verde/rojo)
+            Panel indicadorConexion = new Panel
+            {
+                Size = new Size(20, 20),
+                Location = new Point(15, 20),
+                BackColor = Color.Green,
+                Name = "indicadorConexion"
             };
 
             lblEstadoConexion = new Label
@@ -546,8 +557,9 @@ namespace LaserCuttingApp
                 Text = "CONECTADO",
                 Font = new Font("Arial", 9, FontStyle.Bold),
                 ForeColor = Color.Green,
-                Location = new Point(15, 12),
-                AutoSize = true
+                Location = new Point(40, 12),
+                AutoSize = true,
+                Padding = new Padding(5)
             };
 
             lblFechaActual = new Label
@@ -563,21 +575,35 @@ namespace LaserCuttingApp
                 Text = DateTime.Now.ToString("HH:mm:ss"),
                 Font = new Font("Arial", 11, FontStyle.Bold),
                 ForeColor = colorSecundario,
-                Location = new Point(200, 28),
+                Location = new Point(200, 32),
                 AutoSize = true
             };
 
-            panelInferior.Controls.AddRange(new Control[] { lblEstadoConexion, lblFechaActual, lblHoraActual });
+            panelInferior.Controls.AddRange(new Control[] {
+                indicadorConexion,
+                lblEstadoConexion,
+                lblFechaActual,
+                lblHoraActual
+            });
+
             this.Controls.Add(panelInferior);
         }
 
         private void ConfigurarTimers()
         {
+            // Timer para el reloj
             timerReloj = new Timer { Interval = 1000, Enabled = true };
             timerReloj.Tick += (s, e) =>
             {
                 lblHoraActual.Text = DateTime.Now.ToString("HH:mm:ss");
                 lblFechaActual.Text = DateTime.Now.ToString("dd/MM/yyyy");
+            };
+
+            // Timer para verificación de conexión a bases de datos (cada 30 segundos)
+            timerVerificacionConexion = new System.Windows.Forms.Timer { Interval = 30000, Enabled = true };
+            timerVerificacionConexion.Tick += async (s, e) =>
+            {
+                await ActualizarEstadoConexionAsync();
             };
         }
 
@@ -585,26 +611,102 @@ namespace LaserCuttingApp
         {
             try
             {
-                await ProbarConexionAsync();
+                await ActualizarEstadoConexionAsync();
                 MostrarNotificacion("Sistema listo. Ingrese un codigo CNC.", Color.Green);
             }
             catch (Exception ex)
             {
                 MostrarNotificacion($"Error al conectar: {ex.Message}", Color.Red);
-                lblEstadoConexion.Text = "DESCONECTADO";
-                lblEstadoConexion.ForeColor = Color.Red;
+                ActualizarUIEstadoConexion(false);
             }
         }
 
-        private Task ProbarConexionAsync()
+        // ============== MÉTODOS DE VALIDACIÓN DE CONEXIÓN ==============
+
+        private async Task<bool> VerificarConexionBDAsync()
         {
-            return Task.Run(() =>
+            try
             {
-                using (SqlConnection conn = new SqlConnection(connectionStringMartinRea))
+                bool todasConectadas = true;
+                var cadenasConexion = new Dictionary<string, string>
                 {
-                    conn.Open();
+                    { "MartinRea MJ", connectionStringMartinRea },
+                    { "ORD_PROD", connectionStringORD_PROD },
+                    { "MES", connectionStringMES },
+                    { "MES_PRODUCTION", connectionStringMES_PRODUCTION }
+                };
+
+                foreach (var kvp in cadenasConexion)
+                {
+                    try
+                    {
+                        using (SqlConnection conn = new SqlConnection(kvp.Value))
+                        {
+                            await conn.OpenAsync();
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        todasConectadas = false;
+                        break;
+                    }
                 }
-            });
+
+                return todasConectadas;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task ActualizarEstadoConexionAsync()
+        {
+            try
+            {
+                bool conectado = await VerificarConexionBDAsync();
+
+                if (this.InvokeRequired)
+                {
+                    this.Invoke(new Action(() => ActualizarUIEstadoConexion(conectado)));
+                }
+                else
+                {
+                    ActualizarUIEstadoConexion(conectado);
+                }
+            }
+            catch
+            {
+                if (this.InvokeRequired)
+                {
+                    this.Invoke(new Action(() => ActualizarUIEstadoConexion(false)));
+                }
+                else
+                {
+                    ActualizarUIEstadoConexion(false);
+                }
+            }
+        }
+
+        private void ActualizarUIEstadoConexion(bool conectado)
+        {
+            // Actualizar el indicador visual (círculo)
+            Control[] indicadores = panelInferior.Controls.Find("indicadorConexion", false);
+            if (indicadores.Length > 0 && indicadores[0] is Panel indicador)
+            {
+                indicador.BackColor = conectado ? Color.Green : Color.Red;
+            }
+
+            if (conectado)
+            {
+                lblEstadoConexion.Text = "● CONECTADO";
+                lblEstadoConexion.ForeColor = Color.Green;
+            }
+            else
+            {
+                lblEstadoConexion.Text = "● DESCONECTADO";
+                lblEstadoConexion.ForeColor = Color.Red;
+            }
         }
 
         // ============== OBTENER RECURSO Y CAT_ID DESDE capability ==============
@@ -1119,10 +1221,9 @@ namespace LaserCuttingApp
 
                 MostrarNotificacion($"Reporte exitoso: {cantidadReportar:N0} piezas", Color.Green);
 
-                // Recargar datos del CNC para actualizar cantidades
-                if (!string.IsNullOrEmpty(cncSeleccionado))
+                if (parteSeleccionadaBtn != null && parteSeleccionadaBtn.Tag is ParteInfo parte)
                 {
-                    await RecargarDatosCNCAsync();
+                    await CargarInfoParteAsync(parte);
                 }
             }
             catch (Exception ex)
@@ -1134,14 +1235,6 @@ namespace LaserCuttingApp
                 MostrarCargando(false);
                 semaphore.Release();
             }
-        }
-
-        private async Task RecargarDatosCNCAsync()
-        {
-            string cncTemp = cnnIngresado;
-            cnnIngresado = cncSeleccionado;
-            await ConfirmarCNCAsync();
-            cnnIngresado = cncTemp;
         }
 
         private void LimpiarSeleccion()
@@ -1245,6 +1338,7 @@ namespace LaserCuttingApp
         {
             semaphore?.Dispose();
             timerReloj?.Dispose();
+            timerVerificacionConexion?.Dispose();
             base.OnFormClosing(e);
         }
     }
