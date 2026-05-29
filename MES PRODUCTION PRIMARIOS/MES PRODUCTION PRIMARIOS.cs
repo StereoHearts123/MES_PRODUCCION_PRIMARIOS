@@ -652,7 +652,17 @@ namespace LaserCuttingApp
             {
                 MostrarCargando(true, "Cargando máquinas...");
 
-                string query = @"
+                // Query para la nueva vista VW_CAPABILITY
+                string queryNueva = @"
+                SELECT DISTINCT AORESC 
+                FROM [MES].[MES].[VW_CAPABILITY]
+                WHERE AODEPT = '001LS'
+                AND AORESC IS NOT NULL 
+                AND AORESC != ''
+                ORDER BY AORESC";
+
+                // Query de respaldo en tabla antigua
+                string queryAntigua = @"
                 SELECT DISTINCT AORESC 
                 FROM [MES_PRODUCTION].[dbo].[capability]
                 WHERE AODEPT = '001LS'
@@ -661,37 +671,103 @@ namespace LaserCuttingApp
                 AND ARREPP = 'Y'
                 ORDER BY AORESC";
 
+                maquinasDisponibles.Clear();
+
                 await Task.Run(() =>
                 {
-                    using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
+                    // Intentar primero con la nueva vista
+                    try
                     {
-                        using (SqlCommand cmd = new SqlCommand(query, conn))
+                        using (SqlConnection conn = new SqlConnection(connectionStringMES))
                         {
-                            conn.Open();
-                            using (SqlDataReader reader = cmd.ExecuteReader())
+                            using (SqlCommand cmd = new SqlCommand(queryNueva, conn))
                             {
-                                while (reader.Read())
+                                conn.Open();
+                                using (SqlDataReader reader = cmd.ExecuteReader())
                                 {
-                                    string recurso = reader["AORESC"].ToString().Trim();
-                                    if (!string.IsNullOrEmpty(recurso))
+                                    while (reader.Read())
                                     {
-                                        maquinasDisponibles.Add(recurso);
+                                        string recurso = reader["AORESC"].ToString().Trim();
+                                        if (!string.IsNullOrEmpty(recurso) && !maquinasDisponibles.Contains(recurso))
+                                        {
+                                            maquinasDisponibles.Add(recurso);
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Error al cargar desde VW_CAPABILITY: {ex.Message}");
+                    }
+
+                    // Si no se encontraron máquinas en la nueva vista, usar tabla antigua
+                    if (maquinasDisponibles.Count == 0)
+                    {
+                        try
+                        {
+                            using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
+                            {
+                                using (SqlCommand cmd = new SqlCommand(queryAntigua, conn))
+                                {
+                                    conn.Open();
+                                    using (SqlDataReader reader = cmd.ExecuteReader())
+                                    {
+                                        while (reader.Read())
+                                        {
+                                            string recurso = reader["AORESC"].ToString().Trim();
+                                            if (!string.IsNullOrEmpty(recurso) && !maquinasDisponibles.Contains(recurso))
+                                            {
+                                                maquinasDisponibles.Add(recurso);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Error al cargar desde capability: {ex.Message}");
+                        }
+                    }
                 });
 
-                cmbMaquinas.Items.Clear();
-                cmbMaquinas.Items.Add("-- Seleccione Máquina --");
-                foreach (string maquina in maquinasDisponibles)
+                // Actualizar ComboBox en el hilo UI
+                if (cmbMaquinas.InvokeRequired)
                 {
-                    cmbMaquinas.Items.Add(maquina);
+                    cmbMaquinas.Invoke(new Action(() =>
+                    {
+                        cmbMaquinas.Items.Clear();
+                        cmbMaquinas.Items.Add("-- Seleccione Máquina --");
+                        foreach (string maquina in maquinasDisponibles)
+                        {
+                            cmbMaquinas.Items.Add(maquina);
+                        }
+                        cmbMaquinas.SelectedIndex = 0;
+                    }));
                 }
-                cmbMaquinas.SelectedIndex = 0;
+                else
+                {
+                    cmbMaquinas.Items.Clear();
+                    cmbMaquinas.Items.Add("-- Seleccione Máquina --");
+                    foreach (string maquina in maquinasDisponibles)
+                    {
+                        cmbMaquinas.Items.Add(maquina);
+                    }
+                    cmbMaquinas.SelectedIndex = 0;
+                }
 
                 MostrarCargando(false);
+
+                if (maquinasDisponibles.Count > 0)
+                {
+                    MostrarNotificacion($"{maquinasDisponibles.Count} máquinas cargadas correctamente", Color.Green);
+                }
+                else
+                {
+                    MostrarNotificacion("No se encontraron máquinas disponibles", Color.Orange);
+                }
             }
             catch (Exception ex)
             {
@@ -706,6 +782,12 @@ namespace LaserCuttingApp
             {
                 maquinaSeleccionada = cmbMaquinas.SelectedItem.ToString();
                 MostrarNotificacion($"Máquina seleccionada: {maquinaSeleccionada}", Color.Green);
+
+                // Si ya hay un CNC ingresado, actualizar los resultados
+                if (!string.IsNullOrEmpty(cncSeleccionado))
+                {
+                    _ = ConfirmarCNCAsync();
+                }
             }
             else
             {
@@ -800,15 +882,86 @@ namespace LaserCuttingApp
             }
         }
 
-        // ============== OBTENER RECURSO Y CAT_ID DESDE capability ==============
+        // ============== OBTENER RECURSO Y CAT_ID ==============
         private async Task<RecursoInfo> ObtenerRecursoDesdeTablaAsync(string numeroParte)
         {
+            // Verificar caché primero
             if (cacheRecursos.TryGetValue(numeroParte, out RecursoInfo cachedInfo))
                 return cachedInfo;
 
             try
             {
-                string query = @"
+                RecursoInfo recursoInfo = null;
+
+                // ===== PASO 1: Buscar en la NUEVA vista VW_CAPABILITY =====
+                string queryNuevaVista = @"
+                SELECT TOP 1 
+                    ISNULL(AORESC, 'No especificado') as recurso,
+                    ISNULL(AVDES1, '') as desc_recurso,
+                    ISNULL(AVCATA, '0') as cat_id
+                FROM [MES].[MES].[VW_CAPABILITY]
+                WHERE AOPART = @numeroParte
+                AND AODEPT = '001LS'
+                ORDER BY 
+                    CASE WHEN AORESC = @maquina THEN 0 ELSE 1 END,
+                    AORESC";
+
+                DataTable dtNueva = new DataTable();
+
+                await Task.Run(() =>
+                {
+                    using (SqlConnection conn = new SqlConnection(connectionStringMES))
+                    {
+                        using (SqlCommand cmd = new SqlCommand(queryNuevaVista, conn))
+                        {
+                            cmd.Parameters.AddWithValue("@numeroParte", numeroParte);
+                            cmd.Parameters.AddWithValue("@maquina", maquinaSeleccionada);
+                            using (SqlDataAdapter da = new SqlDataAdapter(cmd))
+                            {
+                                da.Fill(dtNueva);
+                            }
+                        }
+                    }
+                });
+
+                if (dtNueva.Rows.Count > 0)
+                {
+                    string recursoEncontrado = dtNueva.Rows[0]["recurso"].ToString() ?? "No especificado";
+                    string catId = dtNueva.Rows[0]["cat_id"].ToString() ?? "0";
+                    string descripcion = dtNueva.Rows[0]["desc_recurso"].ToString() ?? "";
+
+                    // IMPORTANTE: Si la máquina seleccionada es diferente al recurso encontrado,
+                    // usamos la máquina seleccionada como recurso (ruta alterna)
+                    string recursoFinal = recursoEncontrado;
+                    bool esRutaAlterna = false;
+
+                    if (!string.IsNullOrEmpty(maquinaSeleccionada) &&
+                        !recursoEncontrado.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase) &&
+                        recursoEncontrado != "No especificado")
+                    {
+                        // Es ruta alterna: reportar en la máquina seleccionada
+                        recursoFinal = maquinaSeleccionada;
+                        esRutaAlterna = true;
+                    }
+
+                    recursoInfo = new RecursoInfo
+                    {
+                        Recurso = recursoFinal,
+                        Descripcion = esRutaAlterna ? $"RUTA ALTERNA (Original: {recursoEncontrado})" : descripcion,
+                        CAT_ID = catId
+                    };
+
+                    if (esRutaAlterna)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"RUTA ALTERNA: '{numeroParte}' original en {recursoEncontrado}, reportando en {maquinaSeleccionada}");
+                    }
+
+                    cacheRecursos[numeroParte] = recursoInfo;
+                    return recursoInfo;
+                }
+
+                // ===== PASO 2: Buscar en la tabla ANTIGUA capability =====
+                string queryAntigua = @"
                 SELECT TOP 1 
                     ISNULL(c.AORESC, 'No especificado') as recurso,
                     ISNULL(l.desc_recurso, '') as desc_recurso,
@@ -817,40 +970,66 @@ namespace LaserCuttingApp
                 LEFT JOIN [ORD_PROD].[dbo].[laser_recursos] l 
                     ON c.AOPART COLLATE Modern_Spanish_CI_AS = l.part COLLATE Modern_Spanish_CI_AS
                 WHERE c.AOPART = @numeroParte
-                AND c.ARREPP = 'Y'";
+                AND c.ARREPP = 'Y'
+                AND c.AODEPT = '001LS'";
 
-                DataTable dt = new DataTable();
+                DataTable dtAntigua = new DataTable();
 
                 await Task.Run(() =>
                 {
                     using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
                     {
-                        using (SqlCommand cmd = new SqlCommand(query, conn))
+                        using (SqlCommand cmd = new SqlCommand(queryAntigua, conn))
                         {
                             cmd.Parameters.AddWithValue("@numeroParte", numeroParte);
                             using (SqlDataAdapter da = new SqlDataAdapter(cmd))
                             {
-                                da.Fill(dt);
+                                da.Fill(dtAntigua);
                             }
                         }
                     }
                 });
 
-                RecursoInfo recursoInfo = new RecursoInfo();
-
-                if (dt.Rows.Count > 0)
+                if (dtAntigua.Rows.Count > 0)
                 {
-                    recursoInfo.Recurso = dt.Rows[0]["recurso"].ToString() ?? "No especificado";
-                    recursoInfo.Descripcion = dt.Rows[0]["desc_recurso"].ToString() ?? "";
-                    recursoInfo.CAT_ID = dt.Rows[0]["cat_id"].ToString() ?? "0";
-                }
-                else
-                {
-                    recursoInfo.Recurso = "No especificado";
-                    recursoInfo.Descripcion = "";
-                    recursoInfo.CAT_ID = "0";
+                    string recursoEncontrado = dtAntigua.Rows[0]["recurso"].ToString() ?? "No especificado";
+                    string catId = dtAntigua.Rows[0]["cat_id"].ToString() ?? "0";
+                    string descripcion = dtAntigua.Rows[0]["desc_recurso"].ToString() ?? "";
+
+                    string recursoFinal = recursoEncontrado;
+                    bool esRutaAlterna = false;
+
+                    if (!string.IsNullOrEmpty(maquinaSeleccionada) &&
+                        !recursoEncontrado.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase) &&
+                        recursoEncontrado != "No especificado")
+                    {
+                        recursoFinal = maquinaSeleccionada;
+                        esRutaAlterna = true;
+                    }
+
+                    recursoInfo = new RecursoInfo
+                    {
+                        Recurso = recursoFinal,
+                        Descripcion = esRutaAlterna ? $"RUTA ALTERNA (Original: {recursoEncontrado})" : descripcion,
+                        CAT_ID = catId
+                    };
+
+                    if (esRutaAlterna)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"RUTA ALTERNA (tabla antigua): '{numeroParte}' original en {recursoEncontrado}, reportando en {maquinaSeleccionada}");
+                    }
+
+                    cacheRecursos[numeroParte] = recursoInfo;
+                    return recursoInfo;
                 }
 
+                // ===== SIN RESULTADOS =====
+                recursoInfo = new RecursoInfo
+                {
+                    Recurso = "No especificado",
+                    Descripcion = "",
+                    CAT_ID = "0"
+                };
                 cacheRecursos[numeroParte] = recursoInfo;
                 return recursoInfo;
             }
@@ -861,40 +1040,71 @@ namespace LaserCuttingApp
             }
         }
 
-        // ============== OBTENER SUBRESOURCE_ID DESDE MES.TBL_SUBRESOURCE ==============
+        // ============== OBTENER SUBRESOURCE_ID ==============
         private async Task<int> ObtenerSubresourceIdAsync(string recurso)
         {
             if (string.IsNullOrEmpty(recurso) || recurso == "No especificado" || recurso == "Error")
                 return 0;
 
+            // Verificar caché
             if (cacheSubresourceId.TryGetValue(recurso, out int cachedId))
                 return cachedId;
 
             try
             {
-                string query = @"
+                System.Diagnostics.Debug.WriteLine($"Buscando SUBRESOURCE_ID para recurso: '{recurso}'");
+
+                // Intento 1: Búsqueda exacta
+                string queryExacta = @"
                 SELECT TOP 1 ID 
                 FROM MES.TBL_SUBRESOURCE 
-                WHERE SUB_NAME LIKE @recurso
+                WHERE SUB_NAME = @recursoExacto
                 AND ACTIVE = 1
                 ORDER BY ID";
 
                 using (SqlConnection conn = new SqlConnection(connectionStringMES))
                 {
                     await conn.OpenAsync();
-                    using (SqlCommand cmd = new SqlCommand(query, conn))
+
+                    using (SqlCommand cmd = new SqlCommand(queryExacta, conn))
                     {
-                        cmd.Parameters.AddWithValue("@recurso", "%" + recurso + "%");
+                        cmd.Parameters.AddWithValue("@recursoExacto", recurso);
                         object result = await cmd.ExecuteScalarAsync();
 
                         if (result != null && result != DBNull.Value)
                         {
                             int id = Convert.ToInt32(result);
                             cacheSubresourceId[recurso] = id;
+                            System.Diagnostics.Debug.WriteLine($"✓ SUBRESOURCE_ID exacto: {id}");
+                            return id;
+                        }
+                    }
+
+                    // Intento 2: Búsqueda con LIKE
+                    string queryLike = @"
+                    SELECT TOP 1 ID 
+                    FROM MES.TBL_SUBRESOURCE 
+                    WHERE SUB_NAME LIKE @recursoLike
+                    AND ACTIVE = 1
+                    ORDER BY ID";
+
+                    using (SqlCommand cmd = new SqlCommand(queryLike, conn))
+                    {
+                        cmd.Parameters.AddWithValue("@recursoLike", "%" + recurso + "%");
+                        object result = await cmd.ExecuteScalarAsync();
+
+                        if (result != null && result != DBNull.Value)
+                        {
+                            int id = Convert.ToInt32(result);
+                            cacheSubresourceId[recurso] = id;
+                            System.Diagnostics.Debug.WriteLine($"✓ SUBRESOURCE_ID LIKE: {id}");
                             return id;
                         }
                     }
                 }
+
+                // Intento 3: Valor por defecto
+                System.Diagnostics.Debug.WriteLine($"⚠️ No se encontró SUBRESOURCE_ID para '{recurso}', usando valor por defecto");
 
                 string queryDefault = "SELECT TOP 1 ID FROM MES.TBL_SUBRESOURCE WHERE ACTIVE = 1 ORDER BY ID";
                 using (SqlConnection conn = new SqlConnection(connectionStringMES))
@@ -916,8 +1126,94 @@ namespace LaserCuttingApp
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Error obteniendo SUBRESOURCE_ID: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"❌ Error obteniendo SUBRESOURCE_ID: {ex.Message}");
                 return 0;
+            }
+        }
+
+        // ============== GUARDAR EN TBL_MES_MARS_LASER ==============
+        private async Task GuardarEnTablaLaserAsync(int cantidad)
+        {
+            try
+            {
+                System.Diagnostics.Debug.WriteLine("===== GuardarEnTablaLaserAsync - INICIO =====");
+                System.Diagnostics.Debug.WriteLine($"  CAT_ID: {catIdSeleccionado}");
+                System.Diagnostics.Debug.WriteLine($"  RESOURCE: {recursoSeleccionado}");
+                System.Diagnostics.Debug.WriteLine($"  Cantidad: {cantidad}");
+
+                using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
+                {
+                    await conn.OpenAsync();
+                    System.Diagnostics.Debug.WriteLine("  Conexión abierta a MES_PRODUCTION");
+
+                    // Verificar si ya existe un registro
+                    string checkSql = @"
+                    SELECT ID FROM TBL_MES_MARS_LASER
+                    WHERE CAT_ID = @cat_id
+                      AND RESOURCE = @resource
+                      AND CAST(DATATIME AS DATE) = CAST(GETDATE() AS DATE)";
+
+                    int? existingId = null;
+
+                    using (SqlCommand cmd = new SqlCommand(checkSql, conn))
+                    {
+                        cmd.Parameters.AddWithValue("@cat_id", int.Parse(catIdSeleccionado));
+                        cmd.Parameters.AddWithValue("@resource", recursoSeleccionado);
+
+                        object result = await cmd.ExecuteScalarAsync();
+                        if (result != null && result != DBNull.Value)
+                        {
+                            existingId = Convert.ToInt32(result);
+                            System.Diagnostics.Debug.WriteLine($"  Registro existente: ID={existingId}");
+                        }
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine("  No existe registro previo");
+                        }
+                    }
+
+                    if (existingId.HasValue)
+                    {
+                        // Actualizar registro existente
+                        string updateSql = @"
+                        UPDATE TBL_MES_MARS_LASER
+                        SET [COUNT] = [COUNT] + @cantidad,
+                            DATATIME = GETDATE()
+                        WHERE ID = @id";
+
+                        using (SqlCommand cmd = new SqlCommand(updateSql, conn))
+                        {
+                            cmd.Parameters.AddWithValue("@cantidad", cantidad);
+                            cmd.Parameters.AddWithValue("@id", existingId.Value);
+                            int rowsAffected = await cmd.ExecuteNonQueryAsync();
+                            System.Diagnostics.Debug.WriteLine($"  UPDATE: {rowsAffected} filas afectadas");
+                        }
+                    }
+                    else
+                    {
+                        // Insertar nuevo registro
+                        string insertSql = @"
+                        INSERT INTO TBL_MES_MARS_LASER (CAT_ID, RESOURCE, DATATIME, [COUNT])
+                        VALUES (@cat_id, @resource, GETDATE(), @count)";
+
+                        using (SqlCommand cmd = new SqlCommand(insertSql, conn))
+                        {
+                            cmd.Parameters.AddWithValue("@cat_id", int.Parse(catIdSeleccionado));
+                            cmd.Parameters.AddWithValue("@resource", recursoSeleccionado);
+                            cmd.Parameters.AddWithValue("@count", cantidad);
+                            int rowsAffected = await cmd.ExecuteNonQueryAsync();
+                            System.Diagnostics.Debug.WriteLine($"  INSERT: {rowsAffected} filas afectadas");
+                        }
+                    }
+                }
+
+                System.Diagnostics.Debug.WriteLine("===== GuardarEnTablaLaserAsync - COMPLETADO =====");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"❌ ERROR en TBL_MES_MARS_LASER: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack Trace: {ex.StackTrace}");
+                throw;
             }
         }
 
@@ -926,9 +1222,15 @@ namespace LaserCuttingApp
         {
             try
             {
+                System.Diagnostics.Debug.WriteLine("===== InsertarEnTBLProductionAsync - INICIO =====");
+                System.Diagnostics.Debug.WriteLine($"  SUBRESOURCE_ID: {subresourceId}");
+                System.Diagnostics.Debug.WriteLine($"  CATID: {catId}");
+                System.Diagnostics.Debug.WriteLine($"  QTY: {cantidad}");
+
                 using (SqlConnection conn = new SqlConnection(connectionStringMES))
                 {
                     await conn.OpenAsync();
+                    System.Diagnostics.Debug.WriteLine("  Conexión abierta a MES");
 
                     string query = @"
                     INSERT INTO MES.TBL_PRODUCTION 
@@ -942,81 +1244,17 @@ namespace LaserCuttingApp
                         cmd.Parameters.AddWithValue("@qty", cantidad);
                         cmd.Parameters.AddWithValue("@timestamp", DateTime.Now);
 
-                        await cmd.ExecuteNonQueryAsync();
+                        int rowsAffected = await cmd.ExecuteNonQueryAsync();
+                        System.Diagnostics.Debug.WriteLine($"  INSERT: {rowsAffected} filas afectadas");
                     }
                 }
+
+                System.Diagnostics.Debug.WriteLine("===== InsertarEnTBLProductionAsync - COMPLETADO =====");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Error en MES.TBL_PRODUCTION: {ex.Message}");
-                throw;
-            }
-        }
-
-        // ============== GUARDAR EN TABLA EXISTENTE TBL_MES_MARS_LASER ==============
-        private async Task GuardarEnTablaLaserAsync(int cantidad)
-        {
-            try
-            {
-                using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
-                {
-                    await conn.OpenAsync();
-
-                    // Verificar si ya existe un registro con el mismo CAT_ID + RESOURCE en el día de hoy
-                    string checkSql = @"
-                SELECT ID FROM TBL_MES_MARS_LASER
-                WHERE CAT_ID = @cat_id
-                  AND RESOURCE = @resource
-                  AND CAST(DATATIME AS DATE) = CAST(GETDATE() AS DATE)";
-
-                    int? existingId = null;
-
-                    using (SqlCommand cmd = new SqlCommand(checkSql, conn))
-                    {
-                        cmd.Parameters.AddWithValue("@cat_id", int.Parse(catIdSeleccionado));
-                        cmd.Parameters.AddWithValue("@resource", recursoSeleccionado);
-
-                        object result = await cmd.ExecuteScalarAsync();
-                        if (result != null && result != DBNull.Value)
-                            existingId = Convert.ToInt32(result);
-                    }
-
-                    if (existingId.HasValue)
-                    {
-                        // Ya existe -> sumar al COUNT existente
-                        string updateSql = @"
-                    UPDATE TBL_MES_MARS_LASER
-                    SET [COUNT] = [COUNT] + @cantidad,
-                        DATATIME = GETDATE()
-                    WHERE ID = @id";
-
-                        using (SqlCommand cmd = new SqlCommand(updateSql, conn))
-                        {
-                            cmd.Parameters.AddWithValue("@cantidad", cantidad);
-                            cmd.Parameters.AddWithValue("@id", existingId.Value);
-                            await cmd.ExecuteNonQueryAsync();
-                        }
-                    }
-                    else
-                    {
-                        // No existe -> insertar nuevo registro
-                        string insertSql = @"
-                    INSERT INTO TBL_MES_MARS_LASER (CAT_ID, RESOURCE, DATATIME, [COUNT])
-                    VALUES (@cat_id, @resource, GETDATE(), @count)";
-
-                        using (SqlCommand cmd = new SqlCommand(insertSql, conn))
-                        {
-                            cmd.Parameters.AddWithValue("@cat_id", int.Parse(catIdSeleccionado));
-                            cmd.Parameters.AddWithValue("@resource", recursoSeleccionado);
-                            cmd.Parameters.AddWithValue("@count", cantidad);
-                            await cmd.ExecuteNonQueryAsync();
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error en TBL_MES_MARS_LASER: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"❌ ERROR en MES.TBL_PRODUCTION: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack Trace: {ex.StackTrace}");
                 throw;
             }
         }
@@ -1043,6 +1281,9 @@ namespace LaserCuttingApp
             {
                 isLoading = true;
                 MostrarCargando(true, $"Buscando CNC: {cnnIngresado}...");
+
+                // Limpiar caché de recursos para forzar nueva búsqueda
+                cacheRecursos.Clear();
 
                 // Buscar todas las partes de todos los nestings del CNC
                 string queryPartes = @"
@@ -1082,10 +1323,12 @@ namespace LaserCuttingApp
                 });
 
                 partesActuales.Clear();
+                List<string> partesConRutaAlterna = new List<string>();
+                List<string> partesSinRecurso = new List<string>();
 
                 if (dt.Rows.Count > 0)
                 {
-                    // Primero cargar todas las partes
+                    // Cargar todas las partes
                     var todasLasPartes = new List<ParteInfo>();
                     foreach (DataRow row in dt.Rows)
                     {
@@ -1101,13 +1344,24 @@ namespace LaserCuttingApp
                         });
                     }
 
-                    // Filtrar por máquina seleccionada
+                    // Verificar cada parte y agregar a la lista
                     foreach (var parte in todasLasPartes)
                     {
                         RecursoInfo recursoInfo = await ObtenerRecursoDesdeTablaAsync(parte.PrdRefDst);
-                        if (recursoInfo.Recurso.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase))
+
+                        // Siempre agregar la parte para mostrarla
+                        partesActuales.Add(parte);
+
+                        // Verificar ruta alterna
+                        if (recursoInfo.Descripcion.Contains("RUTA ALTERNA"))
                         {
-                            partesActuales.Add(parte);
+                            partesConRutaAlterna.Add(parte.PrdRefDst);
+                        }
+
+                        // Verificar sin recurso
+                        if (recursoInfo.Recurso == "No especificado" || recursoInfo.CAT_ID == "0")
+                        {
+                            partesSinRecurso.Add(parte.PrdRefDst);
                         }
                     }
 
@@ -1116,17 +1370,24 @@ namespace LaserCuttingApp
                     lblCNCIngresado.Text = $"CNC: {cncSeleccionado}";
                     lblCNCIngresado.Visible = true;
 
-                    // Crear botones de partes (sin selección automática)
+                    // Crear botones de partes
                     CrearBotonesPartes();
 
-                    if (partesActuales.Count > 0)
+                    // Mensaje de resultados
+                    string mensaje = $"CNC {cnnIngresado}: {partesActuales.Count} parte(s)";
+
+                    if (partesConRutaAlterna.Count > 0)
                     {
-                        MostrarNotificacion($"CNC {cnnIngresado}: {partesActuales.Count} parte(s) para {maquinaSeleccionada}.", Color.Green);
+                        mensaje += $" | {partesConRutaAlterna.Count} con ruta alterna";
                     }
-                    else
+
+                    if (partesSinRecurso.Count > 0)
                     {
-                        MostrarNotificacion($"No hay partes para {maquinaSeleccionada} en CNC {cnnIngresado}. Total partes: {todasLasPartes.Count}", Color.Orange);
+                        mensaje += $" | {partesSinRecurso.Count} sin CAT_ID";
                     }
+
+                    MostrarNotificacion(mensaje,
+                        partesConRutaAlterna.Count > 0 ? Color.Orange : Color.Green);
                 }
                 else
                 {
@@ -1168,12 +1429,38 @@ namespace LaserCuttingApp
             int index = 1;
             foreach (var parte in partesActuales)
             {
+                // Obtener información del recurso desde caché
+                RecursoInfo recursoInfo = null;
+                cacheRecursos.TryGetValue(parte.PrdRefDst, out recursoInfo);
+
+                string infoAdicional = "";
+                Color colorBordeBoton = colorBorde;
+
+                if (recursoInfo != null && recursoInfo.Recurso != "No especificado")
+                {
+                    if (recursoInfo.Descripcion.Contains("RUTA ALTERNA"))
+                    {
+                        infoAdicional = "\n[Ruta Alterna]";
+                        colorBordeBoton = Color.Orange;
+                    }
+                    else
+                    {
+                        infoAdicional = $"\n[{recursoInfo.Recurso}]";
+                        colorBordeBoton = Color.Green;
+                    }
+                }
+                else
+                {
+                    infoAdicional = "\n[Sin recurso]";
+                    colorBordeBoton = Color.Red;
+                }
+
                 Button btnParte = new Button
                 {
-                    Text = $"{index:00}. {parte.PrdRefDst}\nCantidad: {parte.Cantidad:N0}\n{parte.NestingNombre}",
-                    Font = new Font("Arial", 9, FontStyle.Bold),
+                    Text = $"{index:00}. {parte.PrdRefDst}\nCantidad: {parte.Cantidad:N0}{infoAdicional}",
+                    Font = new Font("Arial", 8, FontStyle.Bold),
                     BackColor = Color.White,
-                    Size = new Size(380, 65),
+                    Size = new Size(380, 70),
                     FlatStyle = FlatStyle.Flat,
                     Cursor = Cursors.Hand,
                     Margin = new Padding(3),
@@ -1181,8 +1468,8 @@ namespace LaserCuttingApp
                     Tag = parte,
                     UseVisualStyleBackColor = true
                 };
-                btnParte.FlatAppearance.BorderSize = 1;
-                btnParte.FlatAppearance.BorderColor = colorBorde;
+                btnParte.FlatAppearance.BorderSize = 2;
+                btnParte.FlatAppearance.BorderColor = colorBordeBoton;
                 btnParte.Click += async (s, e) => await BtnParte_ClickAsync(s, e);
                 panelPartes.Controls.Add(btnParte);
                 index++;
@@ -1207,18 +1494,29 @@ namespace LaserCuttingApp
                 // Cargar información de la parte
                 await CargarInfoParteAsync(parte);
 
-                // Verificar si se puede reportar y preguntar al usuario
+                // Verificar si se puede reportar
                 if (catIdSeleccionado != "0" && cantidadProduccionActual > 0)
                 {
-                    DialogResult result = MessageBox.Show(
-                        $"¿Reportar {cantidadProduccionActual:N0} piezas para la parte {parte.PrdRefDst}?\n\n" +
+                    string mensajeConfirmacion = $"¿Reportar {cantidadProduccionActual:N0} piezas?\n\n" +
                         $"CNC: {cncSeleccionado}\n" +
                         $"Máquina: {maquinaSeleccionada}\n" +
+                        $"Parte: {parte.PrdRefDst}\n" +
                         $"Trabajo: {nestingSeleccionado}\n" +
                         $"Recurso: {recursoSeleccionado}\n" +
-                        $"CAT_ID: {catIdSeleccionado}\n" +
-                        $"JOB: {parte.MnORef}",
-                        "Confirmar Reporte Automático",
+                        $"CAT_ID: {catIdSeleccionado}";
+
+                    // Verificar si es ruta alterna
+                    RecursoInfo recursoInfo = null;
+                    cacheRecursos.TryGetValue(parte.PrdRefDst, out recursoInfo);
+
+                    if (recursoInfo != null && recursoInfo.Descripcion.Contains("RUTA ALTERNA"))
+                    {
+                        mensajeConfirmacion += $"\n\n⚠️ ATENCIÓN: Reportando en {maquinaSeleccionada} (Ruta Alterna)";
+                    }
+
+                    DialogResult result = MessageBox.Show(
+                        mensajeConfirmacion,
+                        "Confirmar Reporte",
                         MessageBoxButtons.YesNo,
                         MessageBoxIcon.Question);
 
@@ -1229,11 +1527,11 @@ namespace LaserCuttingApp
                 }
                 else if (catIdSeleccionado == "0")
                 {
-                    MostrarNotificacion($"La parte '{parte.PrdRefDst}' no tiene CAT_ID asignado. No se puede reportar.", Color.Orange);
+                    MostrarNotificacion($"La parte '{parte.PrdRefDst}' no tiene CAT_ID asignado", Color.Orange);
                 }
                 else if (cantidadProduccionActual <= 0)
                 {
-                    MostrarNotificacion($"La parte '{parte.PrdRefDst}' tiene cantidad 0 para reportar.", Color.Orange);
+                    MostrarNotificacion($"La parte '{parte.PrdRefDst}' tiene cantidad 0", Color.Orange);
                 }
             }
         }
@@ -1252,6 +1550,9 @@ namespace LaserCuttingApp
                     lblCatIdValor.Text = catIdSeleccionado;
                     lblCatIdValor.ForeColor = catIdSeleccionado != "0" ? Color.Green : Color.Gray;
                 }
+
+                // Actualizar el recurso seleccionado
+                recursoSeleccionado = recursoInfo.Recurso;
 
                 string queryNesting = @"
                 SELECT Name as Recurso, Quantity as Cantidad_Programada, 
@@ -1281,18 +1582,21 @@ namespace LaserCuttingApp
                 {
                     DataRow row = dtNesting.Rows[0];
 
-                    if (recursoInfo.Recurso != "No especificado" && recursoInfo.Recurso != "Error")
+                    // Mostrar información del recurso
+                    string textoRecurso;
+                    if (recursoInfo.Descripcion.Contains("RUTA ALTERNA"))
                     {
-                        recursoSeleccionado = recursoInfo.Recurso;
-                        lblRecursoSeleccionado.Text = string.IsNullOrEmpty(recursoInfo.Descripcion)
-                            ? $"Recurso: {recursoSeleccionado}"
-                            : $"Recurso: {recursoSeleccionado} - {recursoInfo.Descripcion}";
+                        textoRecurso = $"Recurso: {recursoSeleccionado} {recursoInfo.Descripcion}";
+                        lblRecursoSeleccionado.ForeColor = Color.Orange;
                     }
                     else
                     {
-                        recursoSeleccionado = row["Recurso"].ToString() ?? "";
-                        lblRecursoSeleccionado.Text = $"Recurso: {recursoSeleccionado}";
+                        textoRecurso = string.IsNullOrEmpty(recursoInfo.Descripcion)
+                            ? $"Recurso: {recursoSeleccionado}"
+                            : $"Recurso: {recursoSeleccionado} - {recursoInfo.Descripcion}";
+                        lblRecursoSeleccionado.ForeColor = Color.Black;
                     }
+                    lblRecursoSeleccionado.Text = textoRecurso;
 
                     cantidadProgramadaNesting = Convert.ToInt32(row["Cantidad_Programada"]);
                     cantidadReportadaNesting = Convert.ToInt32(row["Cantidad_Reportada"]);
@@ -1337,6 +1641,12 @@ namespace LaserCuttingApp
                 return;
             }
 
+            if (string.IsNullOrEmpty(recursoSeleccionado) || recursoSeleccionado == "No especificado")
+            {
+                MostrarNotificacion("No se encontró un recurso válido para reportar", Color.Red);
+                return;
+            }
+
             if (cantidadReportar <= 0)
             {
                 MostrarNotificacion("La cantidad debe ser mayor a 0", Color.Red);
@@ -1348,13 +1658,81 @@ namespace LaserCuttingApp
             {
                 MostrarCargando(true, "Reportando producción...");
 
-                await GuardarEnTablaLaserAsync(cantidadReportar);
-                int subresourceId = await ObtenerSubresourceIdAsync(recursoSeleccionado);
-                int catIdInt = int.Parse(catIdSeleccionado);
-                await InsertarEnTBLProductionAsync(subresourceId, catIdInt, cantidadReportar);
+                // ===== DIAGNÓSTICO =====
+                System.Diagnostics.Debug.WriteLine("");
+                System.Diagnostics.Debug.WriteLine("========================================");
+                System.Diagnostics.Debug.WriteLine("===== INICIANDO REPORTE DE PRODUCCIÓN =====");
+                System.Diagnostics.Debug.WriteLine("========================================");
+                System.Diagnostics.Debug.WriteLine($"Fecha/Hora: {DateTime.Now}");
+                System.Diagnostics.Debug.WriteLine($"CNC: {cncSeleccionado}");
+                System.Diagnostics.Debug.WriteLine($"Máquina seleccionada: {maquinaSeleccionada}");
+                System.Diagnostics.Debug.WriteLine($"Parte: {parteSeleccionada}");
+                System.Diagnostics.Debug.WriteLine($"Recurso a reportar: {recursoSeleccionado}");
+                System.Diagnostics.Debug.WriteLine($"CAT_ID: {catIdSeleccionado}");
+                System.Diagnostics.Debug.WriteLine($"Cantidad: {cantidadReportar}");
+                System.Diagnostics.Debug.WriteLine($"NstRef: {nstRefActual}");
+                System.Diagnostics.Debug.WriteLine($"MnORef: {mnORefActual}");
 
-                MostrarNotificacion($"Reporte exitoso: {cantidadReportar:N0} piezas", Color.Green);
+                // ===== 1. Guardar en TBL_MES_MARS_LASER =====
+                System.Diagnostics.Debug.WriteLine("");
+                System.Diagnostics.Debug.WriteLine("--- Paso 1: Guardar en TBL_MES_MARS_LASER ---");
+                try
+                {
+                    await GuardarEnTablaLaserAsync(cantidadReportar);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"❌ ERROR CRÍTICO en TBL_MES_MARS_LASER: {ex.Message}");
+                    throw;
+                }
 
+                // ===== 2. Obtener SUBRESOURCE_ID =====
+                System.Diagnostics.Debug.WriteLine("");
+                System.Diagnostics.Debug.WriteLine("--- Paso 2: Obtener SUBRESOURCE_ID ---");
+                int subresourceId = 0;
+                try
+                {
+                    subresourceId = await ObtenerSubresourceIdAsync(recursoSeleccionado);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"⚠️ Error obteniendo SUBRESOURCE_ID: {ex.Message}");
+                    // Continuar con subresourceId = 0
+                }
+
+                // ===== 3. Insertar en MES.TBL_PRODUCTION =====
+                System.Diagnostics.Debug.WriteLine("");
+                System.Diagnostics.Debug.WriteLine("--- Paso 3: Insertar en MES.TBL_PRODUCTION ---");
+                try
+                {
+                    int catIdInt = int.Parse(catIdSeleccionado);
+                    await InsertarEnTBLProductionAsync(subresourceId, catIdInt, cantidadReportar);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"❌ ERROR CRÍTICO en TBL_PRODUCTION: {ex.Message}");
+                    throw;
+                }
+
+                // ===== 4. Mensaje de éxito =====
+                string mensajeExito = $"✅ Reporte exitoso: {cantidadReportar:N0} piezas en {recursoSeleccionado}";
+
+                RecursoInfo recursoInfo = null;
+                cacheRecursos.TryGetValue(parteSeleccionada, out recursoInfo);
+                if (recursoInfo != null && recursoInfo.Descripcion.Contains("RUTA ALTERNA"))
+                {
+                    mensajeExito += " (Ruta Alterna)";
+                }
+
+                MostrarNotificacion(mensajeExito, Color.Green);
+
+                System.Diagnostics.Debug.WriteLine("");
+                System.Diagnostics.Debug.WriteLine("========================================");
+                System.Diagnostics.Debug.WriteLine("===== REPORTE COMPLETADO EXITOSAMENTE =====");
+                System.Diagnostics.Debug.WriteLine("========================================");
+                System.Diagnostics.Debug.WriteLine("");
+
+                // ===== 5. Actualizar información en pantalla =====
                 if (parteSeleccionadaBtn != null && parteSeleccionadaBtn.Tag is ParteInfo parte)
                 {
                     await CargarInfoParteAsync(parte);
@@ -1362,6 +1740,14 @@ namespace LaserCuttingApp
             }
             catch (Exception ex)
             {
+                System.Diagnostics.Debug.WriteLine("");
+                System.Diagnostics.Debug.WriteLine("========================================");
+                System.Diagnostics.Debug.WriteLine("===== ERROR EN REPORTE =====");
+                System.Diagnostics.Debug.WriteLine("========================================");
+                System.Diagnostics.Debug.WriteLine($"Mensaje: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack Trace: {ex.StackTrace}");
+                System.Diagnostics.Debug.WriteLine("");
+
                 MostrarNotificacion($"Error al reportar: {ex.Message}", Color.Red);
             }
             finally
@@ -1392,11 +1778,13 @@ namespace LaserCuttingApp
             mnORefActual = "";
             cantidadProduccionActual = 0;
             partesActuales.Clear();
+            cacheRecursos.Clear();
 
             lblCNCSeleccionado.Text = "CNC: --";
             lblNestingSeleccionado.Text = "Trabajo: --";
             lblParteSeleccionada.Text = "Parte: --";
             lblRecursoSeleccionado.Text = "Recurso: --";
+            lblRecursoSeleccionado.ForeColor = Color.Black;
             if (lblCatIdValor != null) lblCatIdValor.Text = "--";
             lblNstRefValor.Text = "--";
             lblCantidadInfo.Text = "Programado: 0 | Reportado: 0 | Pendiente: 0";
