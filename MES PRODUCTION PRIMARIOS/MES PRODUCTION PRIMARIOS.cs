@@ -35,6 +35,8 @@ namespace LaserCuttingApp
         private int cantidadPendienteNesting = 0;
         private bool isLoading = false;
         private string cnnIngresado = "";
+        private string maquinaSeleccionada = "";
+        private List<string> maquinasDisponibles = new List<string>();
 
         // Cache para recursos (incluye CAT_ID)
         private readonly ConcurrentDictionary<string, RecursoInfo> cacheRecursos = new ConcurrentDictionary<string, RecursoInfo>();
@@ -109,6 +111,7 @@ namespace LaserCuttingApp
         private Label lblCNCIngresado;
         private TextBox txtCNCDisplay;
         private Button btnConfirmarCNC;
+        private ComboBox cmbMaquinas;
 
         // Botones del PIN PAD
         private Button btn0, btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8, btn9;
@@ -206,7 +209,7 @@ namespace LaserCuttingApp
             Panel panelCNC = new Panel
             {
                 Location = new Point(15, 80),
-                Size = new Size(430, 600),
+                Size = new Size(430, 650),
                 BackColor = Color.White,
                 BorderStyle = BorderStyle.FixedSingle
             };
@@ -242,10 +245,30 @@ namespace LaserCuttingApp
                 Visible = false
             };
 
+            // Selector de Máquina
+            Label lblTituloMaquina = new Label
+            {
+                Text = "SELECCIONE MAQUINA",
+                Font = new Font("Arial", 14, FontStyle.Bold),
+                ForeColor = colorSecundario,
+                Location = new Point(15, 140),
+                AutoSize = true
+            };
+
+            cmbMaquinas = new ComboBox
+            {
+                Location = new Point(15, 175),
+                Size = new Size(400, 30),
+                Font = new Font("Arial", 12, FontStyle.Bold),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.White
+            };
+            cmbMaquinas.SelectedIndexChanged += CmbMaquinas_SelectedIndexChanged;
+
             // Panel para botones del PIN PAD
             Panel panelBotones = new Panel
             {
-                Location = new Point(15, 140),
+                Location = new Point(15, 220),
                 Size = new Size(450, 390),
                 BackColor = Color.White
             };
@@ -303,7 +326,7 @@ namespace LaserCuttingApp
             btnConfirmarCNC.Click += async (s, e) => await ConfirmarCNCAsync();
 
             panelBotones.Controls.AddRange(new Control[] { btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8, btn9, btn0, btnBorrar, btnConfirmarCNC });
-            panelCNC.Controls.AddRange(new Control[] { lblTituloCNC, txtCNCDisplay, lblCNCIngresado, panelBotones });
+            panelCNC.Controls.AddRange(new Control[] { lblTituloCNC, txtCNCDisplay, lblCNCIngresado, lblTituloMaquina, cmbMaquinas, panelBotones });
             panelPrincipal.Controls.Add(panelCNC);
         }
 
@@ -349,7 +372,7 @@ namespace LaserCuttingApp
             Panel panelPartesContainer = new Panel
             {
                 Location = new Point(460, 80),
-                Size = new Size(430, 600),
+                Size = new Size(430, 650),
                 BorderStyle = BorderStyle.FixedSingle,
                 BackColor = Color.White
             };
@@ -366,7 +389,7 @@ namespace LaserCuttingApp
             panelPartes = new FlowLayoutPanel
             {
                 Location = new Point(10, 60),
-                Size = new Size(405, 600),
+                Size = new Size(405, 570),
                 AutoScroll = true,
                 Padding = new Padding(5),
                 WrapContents = true,
@@ -382,7 +405,7 @@ namespace LaserCuttingApp
             Panel panelControl = new Panel
             {
                 Location = new Point(905, 80),
-                Size = new Size(440, 600),
+                Size = new Size(440, 650),
                 BorderStyle = BorderStyle.FixedSingle,
                 BackColor = Color.White
             };
@@ -440,7 +463,7 @@ namespace LaserCuttingApp
             {
                 Text = "--",
                 Font = new Font("Arial", 11, FontStyle.Bold),
-                ForeColor = colorExito,
+                ForeColor = Color.Gray,
                 Location = new Point(80, 130),
                 AutoSize = true
             };
@@ -607,11 +630,13 @@ namespace LaserCuttingApp
             };
         }
 
+        // ============== MÉTODOS DE INICIALIZACIÓN ==============
         private async Task CargarDatosInicialesAsync()
         {
             try
             {
                 await ActualizarEstadoConexionAsync();
+                await CargarMaquinasAsync();
                 MostrarNotificacion("Sistema listo. Ingrese un codigo CNC.", Color.Green);
             }
             catch (Exception ex)
@@ -621,8 +646,74 @@ namespace LaserCuttingApp
             }
         }
 
-        // ============== MÉTODOS DE VALIDACIÓN DE CONEXIÓN ==============
+        private async Task CargarMaquinasAsync()
+        {
+            try
+            {
+                MostrarCargando(true, "Cargando máquinas...");
 
+                string query = @"
+                SELECT DISTINCT AORESC 
+                FROM [MES_PRODUCTION].[dbo].[capability]
+                WHERE AODEPT = '001LS'
+                AND AORESC IS NOT NULL 
+                AND AORESC != ''
+                AND ARREPP = 'Y'
+                ORDER BY AORESC";
+
+                await Task.Run(() =>
+                {
+                    using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
+                    {
+                        using (SqlCommand cmd = new SqlCommand(query, conn))
+                        {
+                            conn.Open();
+                            using (SqlDataReader reader = cmd.ExecuteReader())
+                            {
+                                while (reader.Read())
+                                {
+                                    string recurso = reader["AORESC"].ToString().Trim();
+                                    if (!string.IsNullOrEmpty(recurso))
+                                    {
+                                        maquinasDisponibles.Add(recurso);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                cmbMaquinas.Items.Clear();
+                cmbMaquinas.Items.Add("-- Seleccione Máquina --");
+                foreach (string maquina in maquinasDisponibles)
+                {
+                    cmbMaquinas.Items.Add(maquina);
+                }
+                cmbMaquinas.SelectedIndex = 0;
+
+                MostrarCargando(false);
+            }
+            catch (Exception ex)
+            {
+                MostrarNotificacion($"Error al cargar máquinas: {ex.Message}", Color.Red);
+                MostrarCargando(false);
+            }
+        }
+
+        private void CmbMaquinas_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (cmbMaquinas.SelectedIndex > 0)
+            {
+                maquinaSeleccionada = cmbMaquinas.SelectedItem.ToString();
+                MostrarNotificacion($"Máquina seleccionada: {maquinaSeleccionada}", Color.Green);
+            }
+            else
+            {
+                maquinaSeleccionada = "";
+            }
+        }
+
+        // ============== MÉTODOS DE VALIDACIÓN DE CONEXIÓN ==============
         private async Task<bool> VerificarConexionBDAsync()
         {
             try
@@ -862,7 +953,7 @@ namespace LaserCuttingApp
             }
         }
 
-        // ============== GUARDAR EN TABLA EXISTENTE TBL_MES_MARS_lASER ==============
+        // ============== GUARDAR EN TABLA EXISTENTE TBL_MES_MARS_LASER ==============
         private async Task GuardarEnTablaLaserAsync(int cantidad)
         {
             try
@@ -930,11 +1021,18 @@ namespace LaserCuttingApp
             }
         }
 
+        // ============== CONFIRMAR CNC ==============
         private async Task ConfirmarCNCAsync()
         {
             if (string.IsNullOrWhiteSpace(cnnIngresado))
             {
                 MostrarNotificacion("Ingrese un codigo CNC", Color.Orange);
+                return;
+            }
+
+            if (string.IsNullOrEmpty(maquinaSeleccionada))
+            {
+                MostrarNotificacion("Seleccione una máquina primero", Color.Orange);
                 return;
             }
 
@@ -987,9 +1085,11 @@ namespace LaserCuttingApp
 
                 if (dt.Rows.Count > 0)
                 {
+                    // Primero cargar todas las partes
+                    var todasLasPartes = new List<ParteInfo>();
                     foreach (DataRow row in dt.Rows)
                     {
-                        partesActuales.Add(new ParteInfo
+                        todasLasPartes.Add(new ParteInfo
                         {
                             NstRef = row["NstRef"].ToString() ?? "",
                             NestingNombre = row["NestingNombre"].ToString() ?? "",
@@ -1001,6 +1101,16 @@ namespace LaserCuttingApp
                         });
                     }
 
+                    // Filtrar por máquina seleccionada
+                    foreach (var parte in todasLasPartes)
+                    {
+                        RecursoInfo recursoInfo = await ObtenerRecursoDesdeTablaAsync(parte.PrdRefDst);
+                        if (recursoInfo.Recurso.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase))
+                        {
+                            partesActuales.Add(parte);
+                        }
+                    }
+
                     cncSeleccionado = cnnIngresado;
                     lblCNCSeleccionado.Text = $"CNC: {cncSeleccionado}";
                     lblCNCIngresado.Text = $"CNC: {cncSeleccionado}";
@@ -1009,7 +1119,14 @@ namespace LaserCuttingApp
                     // Crear botones de partes (sin selección automática)
                     CrearBotonesPartes();
 
-                    MostrarNotificacion($"CNC {cnnIngresado} encontrado. {partesActuales.Count} parte(s) cargada(s).", Color.Green);
+                    if (partesActuales.Count > 0)
+                    {
+                        MostrarNotificacion($"CNC {cnnIngresado}: {partesActuales.Count} parte(s) para {maquinaSeleccionada}.", Color.Green);
+                    }
+                    else
+                    {
+                        MostrarNotificacion($"No hay partes para {maquinaSeleccionada} en CNC {cnnIngresado}. Total partes: {todasLasPartes.Count}", Color.Orange);
+                    }
                 }
                 else
                 {
@@ -1029,10 +1146,24 @@ namespace LaserCuttingApp
             }
         }
 
+        // ============== CREAR BOTONES DE PARTES ==============
         private void CrearBotonesPartes()
         {
-            panelPartes.SuspendLayout();
             panelPartes.Controls.Clear();
+
+            if (partesActuales.Count == 0)
+            {
+                Label lblSinPartes = new Label
+                {
+                    Text = "No hay partes para mostrar.\nVerifique el CNC y la máquina seleccionada.",
+                    Font = new Font("Arial", 10, FontStyle.Bold),
+                    ForeColor = Color.Gray,
+                    AutoSize = true,
+                    Location = new Point(10, 10)
+                };
+                panelPartes.Controls.Add(lblSinPartes);
+                return;
+            }
 
             int index = 1;
             foreach (var parte in partesActuales)
@@ -1042,7 +1173,7 @@ namespace LaserCuttingApp
                     Text = $"{index:00}. {parte.PrdRefDst}\nCantidad: {parte.Cantidad:N0}\n{parte.NestingNombre}",
                     Font = new Font("Arial", 9, FontStyle.Bold),
                     BackColor = Color.White,
-                    Size = new Size(400, 65),
+                    Size = new Size(380, 65),
                     FlatStyle = FlatStyle.Flat,
                     Cursor = Cursors.Hand,
                     Margin = new Padding(3),
@@ -1056,9 +1187,9 @@ namespace LaserCuttingApp
                 panelPartes.Controls.Add(btnParte);
                 index++;
             }
-            panelPartes.ResumeLayout();
         }
 
+        // ============== CLICK EN BOTÓN DE PARTE ==============
         private async Task BtnParte_ClickAsync(object sender, EventArgs e)
         {
             if (sender is Button btn && btn.Tag is ParteInfo parte)
@@ -1082,6 +1213,7 @@ namespace LaserCuttingApp
                     DialogResult result = MessageBox.Show(
                         $"¿Reportar {cantidadProduccionActual:N0} piezas para la parte {parte.PrdRefDst}?\n\n" +
                         $"CNC: {cncSeleccionado}\n" +
+                        $"Máquina: {maquinaSeleccionada}\n" +
                         $"Trabajo: {nestingSeleccionado}\n" +
                         $"Recurso: {recursoSeleccionado}\n" +
                         $"CAT_ID: {catIdSeleccionado}\n" +
@@ -1106,6 +1238,7 @@ namespace LaserCuttingApp
             }
         }
 
+        // ============== CARGAR INFORMACIÓN DE PARTE ==============
         private async Task CargarInfoParteAsync(ParteInfo parte)
         {
             try
@@ -1189,6 +1322,7 @@ namespace LaserCuttingApp
             }
         }
 
+        // ============== REPORTAR PRODUCCIÓN ==============
         private async Task ReportarProduccionAsync(int cantidadReportar)
         {
             if (string.IsNullOrEmpty(nstRefActual))
@@ -1237,6 +1371,7 @@ namespace LaserCuttingApp
             }
         }
 
+        // ============== LIMPIAR SELECCIÓN ==============
         private void LimpiarSeleccion()
         {
             if (parteSeleccionadaBtn != null)
@@ -1275,6 +1410,7 @@ namespace LaserCuttingApp
             panelPartes.Controls.Clear();
         }
 
+        // ============== MÉTODOS DE UI ==============
         private void MostrarCargando(bool mostrar, string mensaje = "")
         {
             if (InvokeRequired)
