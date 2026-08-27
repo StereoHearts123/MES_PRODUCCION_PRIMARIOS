@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Drawing;
 using System.Windows.Forms;
 using System.Data.SqlClient;
@@ -55,12 +55,14 @@ namespace LaserCuttingApp
             public string Recurso { get; set; }
             public string Descripcion { get; set; }
             public string CAT_ID { get; set; }
+            public string NumeroParteReal { get; set; }
 
             public RecursoInfo()
             {
                 Recurso = "";
                 Descripcion = "";
                 CAT_ID = "0";
+                NumeroParteReal = "";
             }
         }
 
@@ -114,7 +116,7 @@ namespace LaserCuttingApp
         private ComboBox cmbMaquinas;
 
         // Botones del PIN PAD
-        private Button btn0, btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8, btn9;
+        private Button btn0, btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8, btn9, btnO;
 
         private Button parteSeleccionadaBtn = null;
 
@@ -131,6 +133,7 @@ namespace LaserCuttingApp
         public FormLaserCutting()
         {
             InitializeComponent();
+            this.WindowState = FormWindowState.Maximized;  // Inicia maximizad
             ConfigurarEstiloGeneral();
             ConfigurarInterfaz();
             _ = CargarDatosInicialesAsync();
@@ -150,8 +153,8 @@ namespace LaserCuttingApp
             this.Text = "SISTEMA DE REPORTE - CORTADORAS LASER";
             this.BackColor = colorFondo;
             this.DoubleBuffered = true;
-            this.FormBorderStyle = FormBorderStyle.FixedSingle;
-            this.MaximizeBox = false;
+            this.FormBorderStyle = FormBorderStyle.Sizable;
+            this.MaximizeBox = true;
             this.MinimizeBox = true;
             this.Size = new Size(1366, 800);
             this.StartPosition = FormStartPosition.CenterScreen;
@@ -269,38 +272,41 @@ namespace LaserCuttingApp
             Panel panelBotones = new Panel
             {
                 Location = new Point(15, 220),
-                Size = new Size(450, 390),
+                Size = new Size(400, 390),
                 BackColor = Color.White
             };
 
             // Crear botones del PIN PAD
             int btnWidth = 120;
-            int btnHeight = 80;
+            int btnHeight = 65;
             int startX = 10;
             int startY = 10;
-            int spacing = 15;
+            int spacingX = 10;
+            int spacingY = 10;
 
             // Fila 1: 1, 2, 3
             btn1 = CrearBotonPinPad("1", startX, startY, btnWidth, btnHeight);
-            btn2 = CrearBotonPinPad("2", startX + btnWidth + spacing, startY, btnWidth, btnHeight);
-            btn3 = CrearBotonPinPad("3", startX + (btnWidth + spacing) * 2, startY, btnWidth, btnHeight);
+            btn2 = CrearBotonPinPad("2", startX + btnWidth + spacingX, startY, btnWidth, btnHeight);
+            btn3 = CrearBotonPinPad("3", startX + (btnWidth + spacingX) * 2, startY, btnWidth, btnHeight);
 
             // Fila 2: 4, 5, 6
-            btn4 = CrearBotonPinPad("4", startX, startY + btnHeight + spacing, btnWidth, btnHeight);
-            btn5 = CrearBotonPinPad("5", startX + btnWidth + spacing, startY + btnHeight + spacing, btnWidth, btnHeight);
-            btn6 = CrearBotonPinPad("6", startX + (btnWidth + spacing) * 2, startY + btnHeight + spacing, btnWidth, btnHeight);
+            btn4 = CrearBotonPinPad("4", startX, startY + btnHeight + spacingY, btnWidth, btnHeight);
+            btn5 = CrearBotonPinPad("5", startX + btnWidth + spacingX, startY + btnHeight + spacingY, btnWidth, btnHeight);
+            btn6 = CrearBotonPinPad("6", startX + (btnWidth + spacingX) * 2, startY + btnHeight + spacingY, btnWidth, btnHeight);
 
             // Fila 3: 7, 8, 9
-            btn7 = CrearBotonPinPad("7", startX, startY + (btnHeight + spacing) * 2, btnWidth, btnHeight);
-            btn8 = CrearBotonPinPad("8", startX + btnWidth + spacing, startY + (btnHeight + spacing) * 2, btnWidth, btnHeight);
-            btn9 = CrearBotonPinPad("9", startX + (btnWidth + spacing) * 2, startY + (btnHeight + spacing) * 2, btnWidth, btnHeight);
+            btn7 = CrearBotonPinPad("7", startX, startY + (btnHeight + spacingY) * 2, btnWidth, btnHeight);
+            btn8 = CrearBotonPinPad("8", startX + btnWidth + spacingX, startY + (btnHeight + spacingY) * 2, btnWidth, btnHeight);
+            btn9 = CrearBotonPinPad("9", startX + (btnWidth + spacingX) * 2, startY + (btnHeight + spacingY) * 2, btnWidth, btnHeight);
 
-            // Fila 4: 0, Borrar, Confirmar
-            btn0 = CrearBotonPinPad("0", startX + btnWidth + spacing, startY + (btnHeight + spacing) * 3, btnWidth, btnHeight);
+            // Fila 4: O, 0, Borrar
+            btnO = CrearBotonPinPad("O", startX, startY + (btnHeight + spacingY) * 3, btnWidth, btnHeight);
+            btnO.BackColor = Color.FromArgb(235, 243, 250);
+            btn0 = CrearBotonPinPad("0", startX + btnWidth + spacingX, startY + (btnHeight + spacingY) * 3, btnWidth, btnHeight);
             btnBorrar = new Button
             {
                 Text = "⌫",
-                Location = new Point(startX, startY + (btnHeight + spacing) * 3),
+                Location = new Point(startX + (btnWidth + spacingX) * 2, startY + (btnHeight + spacingY) * 3),
                 Size = new Size(btnWidth, btnHeight),
                 Font = new Font("Arial", 20, FontStyle.Bold),
                 BackColor = Color.Orange,
@@ -311,12 +317,14 @@ namespace LaserCuttingApp
             btnBorrar.FlatAppearance.BorderSize = 0;
             btnBorrar.Click += BtnBorrar_Click;
 
+            // Fila 5: Confirmar CNC (ancho completo)
+            int anchoConfirmar = (btnWidth * 3) + (spacingX * 2);
             btnConfirmarCNC = new Button
             {
-                Text = "✓",
-                Location = new Point(startX + (btnWidth + spacing) * 2, startY + (btnHeight + spacing) * 3),
-                Size = new Size(btnWidth, btnHeight),
-                Font = new Font("Arial", 20, FontStyle.Bold),
+                Text = "✓  CONFIRMAR CNC",
+                Location = new Point(startX, startY + (btnHeight + spacingY) * 4),
+                Size = new Size(anchoConfirmar, btnHeight),
+                Font = new Font("Arial", 15, FontStyle.Bold),
                 BackColor = colorExito,
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
@@ -325,7 +333,7 @@ namespace LaserCuttingApp
             btnConfirmarCNC.FlatAppearance.BorderSize = 0;
             btnConfirmarCNC.Click += async (s, e) => await ConfirmarCNCAsync();
 
-            panelBotones.Controls.AddRange(new Control[] { btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8, btn9, btn0, btnBorrar, btnConfirmarCNC });
+            panelBotones.Controls.AddRange(new Control[] { btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8, btn9, btnO, btn0, btnBorrar, btnConfirmarCNC });
             panelCNC.Controls.AddRange(new Control[] { lblTituloCNC, txtCNCDisplay, lblCNCIngresado, lblTituloMaquina, cmbMaquinas, panelBotones });
             panelPrincipal.Controls.Add(panelCNC);
         }
@@ -353,6 +361,12 @@ namespace LaserCuttingApp
         {
             if (sender is Button btn)
             {
+                if (btn.Text == "O" && cnnIngresado.Length > 0)
+                {
+                    MostrarNotificacion("La 'O' solo puede ir al inicio del código CNC", Color.Orange);
+                    return;
+                }
+
                 cnnIngresado += btn.Text;
                 txtCNCDisplay.Text = cnnIngresado;
             }
@@ -882,6 +896,72 @@ namespace LaserCuttingApp
             }
         }
 
+        // ============== LIMPIAR NÚMERO DE PARTE ==============
+        private string LimpiarNumeroParte(string parte)
+        {
+            if (string.IsNullOrWhiteSpace(parte)) return "";
+
+            string limpia = parte.Trim();
+
+            // 1. Si contiene "_OK" (ej. "CAT3667158-010_OK" o "JCB333X9441-010_OK-Rev B")
+            int idxOk = limpia.IndexOf("_OK", StringComparison.OrdinalIgnoreCase);
+            if (idxOk > 0)
+            {
+                limpia = limpia.Substring(0, idxOk).Trim();
+            }
+            else
+            {
+                // 2. Si contiene "-OK" (ej. "JDEHXE185558-010-OK")
+                int idxGuionOk = limpia.IndexOf("-OK", StringComparison.OrdinalIgnoreCase);
+                if (idxGuionOk > 0)
+                {
+                    limpia = limpia.Substring(0, idxGuionOk).Trim();
+                }
+                else if (limpia.EndsWith(" OK", StringComparison.OrdinalIgnoreCase))
+                {
+                    limpia = limpia.Substring(0, limpia.Length - 3).Trim();
+                }
+            }
+
+            // Si quedó algún sufijo como "_C" al final debido a _C-OK (ej: JDEW59549-010_C)
+            if (limpia.EndsWith("_C", StringComparison.OrdinalIgnoreCase))
+            {
+                limpia = limpia.Substring(0, limpia.Length - 2).Trim();
+            }
+
+            return limpia;
+        }
+
+        // ============== EXTRAER NÚMERO DE PARTE BASE / INCOMPLETO ==============
+        private string ExtraerNumeroParteBase(string parte)
+        {
+            if (string.IsNullOrWhiteSpace(parte)) return "";
+
+            string limpia = LimpiarNumeroParte(parte);
+
+            // Si contiene guión bajo (ej: "1079831_DXF_6mm", "W55650_A", "3390280_CP01"), tomar la parte anterior al primer '_'
+            if (limpia.Contains("_"))
+            {
+                string[] partes = limpia.Split('_');
+                if (partes.Length > 0 && partes[0].Length >= 4)
+                {
+                    return partes[0].Trim();
+                }
+            }
+
+            // Si contiene espacio (ej: "3361766 2mm"), tomar la parte anterior
+            if (limpia.Contains(" "))
+            {
+                string[] partes = limpia.Split(' ');
+                if (partes.Length > 0 && partes[0].Length >= 4)
+                {
+                    return partes[0].Trim();
+                }
+            }
+
+            return limpia;
+        }
+
         // ============== OBTENER RECURSO Y CAT_ID ==============
         private async Task<RecursoInfo> ObtenerRecursoDesdeTablaAsync(string numeroParte)
         {
@@ -889,21 +969,32 @@ namespace LaserCuttingApp
             if (cacheRecursos.TryGetValue(numeroParte, out RecursoInfo cachedInfo))
                 return cachedInfo;
 
+            string parteLimpia = LimpiarNumeroParte(numeroParte);
+
+            // Si la parte limpia ya está en caché, usarla
+            if (!string.IsNullOrEmpty(parteLimpia) && parteLimpia != numeroParte && cacheRecursos.TryGetValue(parteLimpia, out RecursoInfo cachedLimpia))
+            {
+                cacheRecursos[numeroParte] = cachedLimpia;
+                return cachedLimpia;
+            }
+
             try
             {
                 RecursoInfo recursoInfo = null;
 
-                // ===== PASO 1: Buscar en la NUEVA vista VW_CAPABILITY =====
+                // ===== PASO 1: Buscar en la NUEVA vista VW_CAPABILITY (coincidencia exacta) =====
                 string queryNuevaVista = @"
                 SELECT TOP 1 
+                    ISNULL(AOPART, '') as aopart,
                     ISNULL(AORESC, 'No especificado') as recurso,
                     ISNULL(AVDES1, '') as desc_recurso,
                     ISNULL(AVCATA, '0') as cat_id
                 FROM [MES].[MES].[VW_CAPABILITY]
-                WHERE AOPART = @numeroParte
+                WHERE (AOPART = @numeroParte OR AOPART = @parteLimpia)
                 AND AODEPT = '001LS'
                 ORDER BY 
                     CASE WHEN AORESC = @maquina THEN 0 ELSE 1 END,
+                    CASE WHEN AOPART = @numeroParte THEN 0 ELSE 1 END,
                     AORESC";
 
                 DataTable dtNueva = new DataTable();
@@ -915,6 +1006,7 @@ namespace LaserCuttingApp
                         using (SqlCommand cmd = new SqlCommand(queryNuevaVista, conn))
                         {
                             cmd.Parameters.AddWithValue("@numeroParte", numeroParte);
+                            cmd.Parameters.AddWithValue("@parteLimpia", parteLimpia);
                             cmd.Parameters.AddWithValue("@maquina", maquinaSeleccionada);
                             using (SqlDataAdapter da = new SqlDataAdapter(cmd))
                             {
@@ -926,12 +1018,11 @@ namespace LaserCuttingApp
 
                 if (dtNueva.Rows.Count > 0)
                 {
+                    string parteEncontrada = dtNueva.Rows[0]["aopart"].ToString() ?? numeroParte;
                     string recursoEncontrado = dtNueva.Rows[0]["recurso"].ToString() ?? "No especificado";
                     string catId = dtNueva.Rows[0]["cat_id"].ToString() ?? "0";
                     string descripcion = dtNueva.Rows[0]["desc_recurso"].ToString() ?? "";
 
-                    // IMPORTANTE: Si la máquina seleccionada es diferente al recurso encontrado,
-                    // usamos la máquina seleccionada como recurso (ruta alterna)
                     string recursoFinal = recursoEncontrado;
                     bool esRutaAlterna = false;
 
@@ -939,7 +1030,6 @@ namespace LaserCuttingApp
                         !recursoEncontrado.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase) &&
                         recursoEncontrado != "No especificado")
                     {
-                        // Es ruta alterna: reportar en la máquina seleccionada
                         recursoFinal = maquinaSeleccionada;
                         esRutaAlterna = true;
                     }
@@ -948,7 +1038,8 @@ namespace LaserCuttingApp
                     {
                         Recurso = recursoFinal,
                         Descripcion = esRutaAlterna ? $"RUTA ALTERNA (Original: {recursoEncontrado})" : descripcion,
-                        CAT_ID = catId
+                        CAT_ID = catId,
+                        NumeroParteReal = parteEncontrada
                     };
 
                     if (esRutaAlterna)
@@ -957,21 +1048,26 @@ namespace LaserCuttingApp
                     }
 
                     cacheRecursos[numeroParte] = recursoInfo;
+                    if (parteLimpia != numeroParte) cacheRecursos[parteLimpia] = recursoInfo;
+                    if (!string.IsNullOrEmpty(parteEncontrada)) cacheRecursos[parteEncontrada] = recursoInfo;
                     return recursoInfo;
                 }
 
-                // ===== PASO 2: Buscar en la tabla ANTIGUA capability =====
+                // ===== PASO 2: Buscar en la tabla ANTIGUA capability (coincidencia exacta) =====
                 string queryAntigua = @"
                 SELECT TOP 1 
+                    ISNULL(c.AOPART, '') as aopart,
                     ISNULL(c.AORESC, 'No especificado') as recurso,
                     ISNULL(l.desc_recurso, '') as desc_recurso,
                     ISNULL(c.AVCATA, '0') as cat_id
                 FROM [MES_PRODUCTION].[dbo].[capability] c
                 LEFT JOIN [ORD_PROD].[dbo].[laser_recursos] l 
                     ON c.AOPART COLLATE Modern_Spanish_CI_AS = l.part COLLATE Modern_Spanish_CI_AS
-                WHERE c.AOPART = @numeroParte
+                WHERE (c.AOPART = @numeroParte OR c.AOPART = @parteLimpia)
                 AND c.ARREPP = 'Y'
-                AND c.AODEPT = '001LS'";
+                AND c.AODEPT = '001LS'
+                ORDER BY 
+                    CASE WHEN c.AOPART = @numeroParte THEN 0 ELSE 1 END";
 
                 DataTable dtAntigua = new DataTable();
 
@@ -982,6 +1078,7 @@ namespace LaserCuttingApp
                         using (SqlCommand cmd = new SqlCommand(queryAntigua, conn))
                         {
                             cmd.Parameters.AddWithValue("@numeroParte", numeroParte);
+                            cmd.Parameters.AddWithValue("@parteLimpia", parteLimpia);
                             using (SqlDataAdapter da = new SqlDataAdapter(cmd))
                             {
                                 da.Fill(dtAntigua);
@@ -992,6 +1089,7 @@ namespace LaserCuttingApp
 
                 if (dtAntigua.Rows.Count > 0)
                 {
+                    string parteEncontrada = dtAntigua.Rows[0]["aopart"].ToString() ?? numeroParte;
                     string recursoEncontrado = dtAntigua.Rows[0]["recurso"].ToString() ?? "No especificado";
                     string catId = dtAntigua.Rows[0]["cat_id"].ToString() ?? "0";
                     string descripcion = dtAntigua.Rows[0]["desc_recurso"].ToString() ?? "";
@@ -1011,7 +1109,8 @@ namespace LaserCuttingApp
                     {
                         Recurso = recursoFinal,
                         Descripcion = esRutaAlterna ? $"RUTA ALTERNA (Original: {recursoEncontrado})" : descripcion,
-                        CAT_ID = catId
+                        CAT_ID = catId,
+                        NumeroParteReal = parteEncontrada
                     };
 
                     if (esRutaAlterna)
@@ -1020,7 +1119,151 @@ namespace LaserCuttingApp
                     }
 
                     cacheRecursos[numeroParte] = recursoInfo;
+                    if (parteLimpia != numeroParte) cacheRecursos[parteLimpia] = recursoInfo;
+                    if (!string.IsNullOrEmpty(parteEncontrada)) cacheRecursos[parteEncontrada] = recursoInfo;
                     return recursoInfo;
+                }
+
+                // ===== PASO 3: Búsqueda para partes INCOMPLETAS (ej: W52852 -> JDEW52852-010) =====
+                string parteBase = ExtraerNumeroParteBase(parteLimpia);
+                if (!string.IsNullOrEmpty(parteBase) && parteBase.Length >= 4)
+                {
+                    // 3.1 Buscar en VW_CAPABILITY por coincidencia parcial
+                    string queryIncompletaNueva = @"
+                    SELECT TOP 1 
+                        ISNULL(AOPART, '') as aopart,
+                        ISNULL(AORESC, 'No especificado') as recurso,
+                        ISNULL(AVDES1, '') as desc_recurso,
+                        ISNULL(AVCATA, '0') as cat_id
+                    FROM [MES].[MES].[VW_CAPABILITY]
+                    WHERE (AOPART LIKE '%' + @parteBase + '%' OR AOPART LIKE '%' + @parteBase + '-%')
+                    AND AODEPT = '001LS'
+                    ORDER BY 
+                        CASE WHEN AORESC = @maquina THEN 0 ELSE 1 END,
+                        CASE WHEN AOPART LIKE '%-010' THEN 0 ELSE 1 END,
+                        LEN(AOPART) ASC";
+
+                    DataTable dtIncompletaNueva = new DataTable();
+
+                    await Task.Run(() =>
+                    {
+                        using (SqlConnection conn = new SqlConnection(connectionStringMES))
+                        {
+                            using (SqlCommand cmd = new SqlCommand(queryIncompletaNueva, conn))
+                            {
+                                cmd.Parameters.AddWithValue("@parteBase", parteBase);
+                                cmd.Parameters.AddWithValue("@maquina", maquinaSeleccionada);
+                                using (SqlDataAdapter da = new SqlDataAdapter(cmd))
+                                {
+                                    da.Fill(dtIncompletaNueva);
+                                }
+                            }
+                        }
+                    });
+
+                    if (dtIncompletaNueva.Rows.Count > 0)
+                    {
+                        string parteEncontrada = dtIncompletaNueva.Rows[0]["aopart"].ToString() ?? "";
+                        string recursoEncontrado = dtIncompletaNueva.Rows[0]["recurso"].ToString() ?? "No especificado";
+                        string catId = dtIncompletaNueva.Rows[0]["cat_id"].ToString() ?? "0";
+                        string descripcion = dtIncompletaNueva.Rows[0]["desc_recurso"].ToString() ?? "";
+
+                        string recursoFinal = recursoEncontrado;
+                        bool esRutaAlterna = false;
+
+                        if (!string.IsNullOrEmpty(maquinaSeleccionada) &&
+                            !recursoEncontrado.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase) &&
+                            recursoEncontrado != "No especificado")
+                        {
+                            recursoFinal = maquinaSeleccionada;
+                            esRutaAlterna = true;
+                        }
+
+                        recursoInfo = new RecursoInfo
+                        {
+                            Recurso = recursoFinal,
+                            Descripcion = esRutaAlterna ? $"RUTA ALTERNA (Original: {recursoEncontrado})" : descripcion,
+                            CAT_ID = catId,
+                            NumeroParteReal = parteEncontrada
+                        };
+
+                        System.Diagnostics.Debug.WriteLine($"PARTE INCOMPLETA RESUELTA (VW_CAPABILITY): '{numeroParte}' -> '{parteEncontrada}' | Recurso: {recursoFinal} | CAT_ID: {catId}");
+
+                        cacheRecursos[numeroParte] = recursoInfo;
+                        cacheRecursos[parteBase] = recursoInfo;
+                        if (!string.IsNullOrEmpty(parteEncontrada)) cacheRecursos[parteEncontrada] = recursoInfo;
+                        return recursoInfo;
+                    }
+
+                    // 3.2 Buscar en capability antigua por coincidencia parcial
+                    string queryIncompletaAntigua = @"
+                    SELECT TOP 1 
+                        ISNULL(c.AOPART, '') as aopart,
+                        ISNULL(c.AORESC, 'No especificado') as recurso,
+                        ISNULL(l.desc_recurso, '') as desc_recurso,
+                        ISNULL(c.AVCATA, '0') as cat_id
+                    FROM [MES_PRODUCTION].[dbo].[capability] c
+                    LEFT JOIN [ORD_PROD].[dbo].[laser_recursos] l 
+                        ON c.AOPART COLLATE Modern_Spanish_CI_AS = l.part COLLATE Modern_Spanish_CI_AS
+                    WHERE (c.AOPART LIKE '%' + @parteBase + '%' OR c.AOPART LIKE '%' + @parteBase + '-%')
+                    AND c.ARREPP = 'Y'
+                    AND c.AODEPT = '001LS'
+                    ORDER BY 
+                        CASE WHEN c.AORESC = @maquina THEN 0 ELSE 1 END,
+                        CASE WHEN c.AOPART LIKE '%-010' THEN 0 ELSE 1 END,
+                        LEN(c.AOPART) ASC";
+
+                    DataTable dtIncompletaAntigua = new DataTable();
+
+                    await Task.Run(() =>
+                    {
+                        using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
+                        {
+                            using (SqlCommand cmd = new SqlCommand(queryIncompletaAntigua, conn))
+                            {
+                                cmd.Parameters.AddWithValue("@parteBase", parteBase);
+                                cmd.Parameters.AddWithValue("@maquina", maquinaSeleccionada);
+                                using (SqlDataAdapter da = new SqlDataAdapter(cmd))
+                                {
+                                    da.Fill(dtIncompletaAntigua);
+                                }
+                            }
+                        }
+                    });
+
+                    if (dtIncompletaAntigua.Rows.Count > 0)
+                    {
+                        string parteEncontrada = dtIncompletaAntigua.Rows[0]["aopart"].ToString() ?? "";
+                        string recursoEncontrado = dtIncompletaAntigua.Rows[0]["recurso"].ToString() ?? "No especificado";
+                        string catId = dtIncompletaAntigua.Rows[0]["cat_id"].ToString() ?? "0";
+                        string descripcion = dtIncompletaAntigua.Rows[0]["desc_recurso"].ToString() ?? "";
+
+                        string recursoFinal = recursoEncontrado;
+                        bool esRutaAlterna = false;
+
+                        if (!string.IsNullOrEmpty(maquinaSeleccionada) &&
+                            !recursoEncontrado.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase) &&
+                            recursoEncontrado != "No especificado")
+                        {
+                            recursoFinal = maquinaSeleccionada;
+                            esRutaAlterna = true;
+                        }
+
+                        recursoInfo = new RecursoInfo
+                        {
+                            Recurso = recursoFinal,
+                            Descripcion = esRutaAlterna ? $"RUTA ALTERNA (Original: {recursoEncontrado})" : descripcion,
+                            CAT_ID = catId,
+                            NumeroParteReal = parteEncontrada
+                        };
+
+                        System.Diagnostics.Debug.WriteLine($"PARTE INCOMPLETA RESUELTA (tabla antigua): '{numeroParte}' -> '{parteEncontrada}' | Recurso: {recursoFinal} | CAT_ID: {catId}");
+
+                        cacheRecursos[numeroParte] = recursoInfo;
+                        cacheRecursos[parteBase] = recursoInfo;
+                        if (!string.IsNullOrEmpty(parteEncontrada)) cacheRecursos[parteEncontrada] = recursoInfo;
+                        return recursoInfo;
+                    }
                 }
 
                 // ===== SIN RESULTADOS =====
@@ -1028,7 +1271,8 @@ namespace LaserCuttingApp
                 {
                     Recurso = "No especificado",
                     Descripcion = "",
-                    CAT_ID = "0"
+                    CAT_ID = "0",
+                    NumeroParteReal = numeroParte
                 };
                 cacheRecursos[numeroParte] = recursoInfo;
                 return recursoInfo;
@@ -1036,7 +1280,7 @@ namespace LaserCuttingApp
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"Error al obtener recurso: {ex.Message}");
-                return new RecursoInfo { Recurso = "Error", Descripcion = "", CAT_ID = "0" };
+                return new RecursoInfo { Recurso = "Error", Descripcion = "", CAT_ID = "0", NumeroParteReal = numeroParte };
             }
         }
 
@@ -1455,9 +1699,16 @@ namespace LaserCuttingApp
                     colorBordeBoton = Color.Red;
                 }
 
+                string textoParte = parte.PrdRefDst;
+                if (recursoInfo != null && !string.IsNullOrEmpty(recursoInfo.NumeroParteReal) &&
+                    !recursoInfo.NumeroParteReal.Equals(parte.PrdRefDst, StringComparison.OrdinalIgnoreCase))
+                {
+                    textoParte = $"{parte.PrdRefDst} ({recursoInfo.NumeroParteReal})";
+                }
+
                 Button btnParte = new Button
                 {
-                    Text = $"{index:00}. {parte.PrdRefDst}\nCantidad: {parte.Cantidad:N0}{infoAdicional}",
+                    Text = $"{index:00}. {textoParte}\nCantidad: {parte.Cantidad:N0}{infoAdicional}",
                     Font = new Font("Arial", 8, FontStyle.Bold),
                     BackColor = Color.White,
                     Size = new Size(380, 70),
@@ -1497,18 +1748,25 @@ namespace LaserCuttingApp
                 // Verificar si se puede reportar
                 if (catIdSeleccionado != "0" && cantidadProduccionActual > 0)
                 {
+                    RecursoInfo recursoInfo = null;
+                    cacheRecursos.TryGetValue(parte.PrdRefDst, out recursoInfo);
+
+                    string parteTextoDialogo = parte.PrdRefDst;
+                    if (recursoInfo != null && !string.IsNullOrEmpty(recursoInfo.NumeroParteReal) &&
+                        !recursoInfo.NumeroParteReal.Equals(parte.PrdRefDst, StringComparison.OrdinalIgnoreCase))
+                    {
+                        parteTextoDialogo = $"{parte.PrdRefDst} ({recursoInfo.NumeroParteReal})";
+                    }
+
                     string mensajeConfirmacion = $"¿Reportar {cantidadProduccionActual:N0} piezas?\n\n" +
                         $"CNC: {cncSeleccionado}\n" +
                         $"Máquina: {maquinaSeleccionada}\n" +
-                        $"Parte: {parte.PrdRefDst}\n" +
+                        $"Parte: {parteTextoDialogo}\n" +
                         $"Trabajo: {nestingSeleccionado}\n" +
                         $"Recurso: {recursoSeleccionado}\n" +
                         $"CAT_ID: {catIdSeleccionado}";
 
                     // Verificar si es ruta alterna
-                    RecursoInfo recursoInfo = null;
-                    cacheRecursos.TryGetValue(parte.PrdRefDst, out recursoInfo);
-
                     if (recursoInfo != null && recursoInfo.Descripcion.Contains("RUTA ALTERNA"))
                     {
                         mensajeConfirmacion += $"\n\n⚠️ ATENCIÓN: Reportando en {maquinaSeleccionada} (Ruta Alterna)";
@@ -1607,7 +1865,14 @@ namespace LaserCuttingApp
                     cantidadProduccionActual = parte.Cantidad;
                     nestingSeleccionado = parte.NestingNombre;
 
-                    lblParteSeleccionada.Text = $"Parte: {parteSeleccionada}";
+                    string parteTextoDisplay = parte.PrdRefDst;
+                    if (recursoInfo != null && !string.IsNullOrEmpty(recursoInfo.NumeroParteReal) &&
+                        !recursoInfo.NumeroParteReal.Equals(parte.PrdRefDst, StringComparison.OrdinalIgnoreCase))
+                    {
+                        parteTextoDisplay = $"{parte.PrdRefDst} ({recursoInfo.NumeroParteReal})";
+                    }
+
+                    lblParteSeleccionada.Text = $"Parte: {parteTextoDisplay}";
                     lblNestingSeleccionado.Text = $"Trabajo: {nestingSeleccionado}";
 
                     Control[] controls = panelPrincipal.Controls.Find("lblJobValor", true);
