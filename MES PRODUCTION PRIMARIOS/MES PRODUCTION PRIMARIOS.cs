@@ -44,6 +44,9 @@ namespace LaserCuttingApp
         // Cache para SUBRESOURCE_ID
         private readonly ConcurrentDictionary<string, int> cacheSubresourceId = new ConcurrentDictionary<string, int>();
 
+        // Cache para rutas alternas desde S1020365.MJDAT.METHDA (Parte -> Lista de recursos alternos)
+        private readonly ConcurrentDictionary<string, HashSet<string>> cacheRutasAlternas = new ConcurrentDictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
         // Semaphore para control de concurrencia
         private readonly System.Threading.SemaphoreSlim semaphore = new System.Threading.SemaphoreSlim(1, 1);
 
@@ -56,6 +59,10 @@ namespace LaserCuttingApp
             public string Descripcion { get; set; }
             public string CAT_ID { get; set; }
             public string NumeroParteReal { get; set; }
+            public bool EsRutaAlterna { get; set; }
+            public bool EsRutaValida { get; set; }
+            public string RecursoOriginal { get; set; }
+            public List<string> RecursosAlternosPermitidos { get; set; }
 
             public RecursoInfo()
             {
@@ -63,6 +70,10 @@ namespace LaserCuttingApp
                 Descripcion = "";
                 CAT_ID = "0";
                 NumeroParteReal = "";
+                EsRutaAlterna = false;
+                EsRutaValida = true;
+                RecursoOriginal = "";
+                RecursosAlternosPermitidos = new List<string>();
             }
         }
 
@@ -650,6 +661,7 @@ namespace LaserCuttingApp
             try
             {
                 await ActualizarEstadoConexionAsync();
+                await CargarRutasAlternasAsync();
                 await CargarMaquinasAsync();
                 MostrarNotificacion("Sistema listo. Ingrese un codigo CNC.", Color.Green);
             }
@@ -658,6 +670,151 @@ namespace LaserCuttingApp
                 MostrarNotificacion($"Error al conectar: {ex.Message}", Color.Red);
                 ActualizarUIEstadoConexion(false);
             }
+        }
+
+        // ============== CARGAR RUTAS ALTERNAS DESDE S1020365.MJDAT.METHDA ==============
+        private async Task CargarRutasAlternasAsync()
+        {
+            try
+            {
+                System.Diagnostics.Debug.WriteLine("===== Cargando rutas alternas desde S1020365.MJDAT.METHDA vía MES_CMS =====");
+
+                string queryAlternas = @"
+                SELECT ARPART, ARRESC 
+                FROM OPENQUERY(MES_CMS, 'SELECT ARPART, ARRESC FROM MJDAT.METHDA WHERE ARDEPT = ''001LS'' AND ARREPP = ''Y''')";
+
+                DataTable dtAlternas = new DataTable();
+
+                await Task.Run(() =>
+                {
+                    using (SqlConnection conn = new SqlConnection(connectionStringMES))
+                    {
+                        using (SqlCommand cmd = new SqlCommand(queryAlternas, conn))
+                        {
+                            cmd.CommandTimeout = 30;
+                            using (SqlDataAdapter da = new SqlDataAdapter(cmd))
+                            {
+                                da.Fill(dtAlternas);
+                            }
+                        }
+                    }
+                });
+
+                cacheRutasAlternas.Clear();
+
+                foreach (DataRow row in dtAlternas.Rows)
+                {
+                    string parte = row["ARPART"]?.ToString()?.Trim() ?? "";
+                    string recurso = row["ARRESC"]?.ToString()?.Trim() ?? "";
+
+                    if (string.IsNullOrEmpty(parte) || string.IsNullOrEmpty(recurso))
+                        continue;
+
+                    RegistrarRutaAlternaEnCache(parte, recurso);
+
+                    // Registrar también versión limpia (sin _OK, -OK, etc.)
+                    string parteLimpia = LimpiarNumeroParte(parte);
+                    if (!string.IsNullOrEmpty(parteLimpia) && parteLimpia != parte)
+                    {
+                        RegistrarRutaAlternaEnCache(parteLimpia, recurso);
+                    }
+
+                    // Registrar también parte base si tiene guion o sufijo
+                    string parteBase = ExtraerNumeroParteBase(parteLimpia);
+                    if (!string.IsNullOrEmpty(parteBase) && parteBase.Length >= 4 && parteBase != parteLimpia)
+                    {
+                        RegistrarRutaAlternaEnCache(parteBase, recurso);
+                    }
+                }
+
+                System.Diagnostics.Debug.WriteLine($"✓ {dtAlternas.Rows.Count} rutas alternas cargadas exitosamente desde S1020365.MJDAT.METHDA ({cacheRutasAlternas.Count} partes indexadas)");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"❌ Error al cargar rutas alternas desde METHDA: {ex.Message}");
+            }
+        }
+
+        private void RegistrarRutaAlternaEnCache(string parte, string recurso)
+        {
+            cacheRutasAlternas.AddOrUpdate(
+                parte,
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { recurso },
+                (key, existingSet) =>
+                {
+                    lock (existingSet)
+                    {
+                        existingSet.Add(recurso);
+                    }
+                    return existingSet;
+                });
+        }
+
+        private List<string> ObtenerRecursosAlternos(string parte)
+        {
+            if (string.IsNullOrEmpty(parte)) return new List<string>();
+
+            HashSet<string> lista = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (cacheRutasAlternas.TryGetValue(parte, out var recursos))
+            {
+                foreach (var r in recursos) lista.Add(r);
+            }
+
+            string limpia = LimpiarNumeroParte(parte);
+            if (!string.IsNullOrEmpty(limpia) && cacheRutasAlternas.TryGetValue(limpia, out var recursosLimpia))
+            {
+                foreach (var r in recursosLimpia) lista.Add(r);
+            }
+
+            string baseParte = ExtraerNumeroParteBase(limpia);
+            if (!string.IsNullOrEmpty(baseParte) && cacheRutasAlternas.TryGetValue(baseParte, out var recursosBase))
+            {
+                foreach (var r in recursosBase) lista.Add(r);
+            }
+
+            return lista.ToList();
+        }
+
+        private bool TieneRutaAlterna(string parte, string recurso)
+        {
+            if (string.IsNullOrEmpty(parte) || string.IsNullOrEmpty(recurso))
+                return false;
+
+            var alternos = ObtenerRecursosAlternos(parte);
+            return alternos.Contains(recurso, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private async Task<string> BuscarCatIdRespaldoAsync(string numeroParte, string parteLimpia)
+        {
+            try
+            {
+                string sql = @"
+                SELECT TOP 1 ISNULL(AVCATA, '0') as cat_id
+                FROM [MES_PRODUCTION].[dbo].[capability]
+                WHERE (AOPART = @numeroParte OR AOPART = @parteLimpia)
+                ORDER BY CASE WHEN AVCATA > 0 THEN 0 ELSE 1 END";
+
+                using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
+                {
+                    using (SqlCommand cmd = new SqlCommand(sql, conn))
+                    {
+                        cmd.Parameters.AddWithValue("@numeroParte", numeroParte);
+                        cmd.Parameters.AddWithValue("@parteLimpia", parteLimpia);
+                        await conn.OpenAsync();
+                        object res = await cmd.ExecuteScalarAsync();
+                        if (res != null && res != DBNull.Value && res.ToString() != "0")
+                        {
+                            return res.ToString();
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error en BuscarCatIdRespaldoAsync: {ex.Message}");
+            }
+            return "0";
         }
 
         private async Task CargarMaquinasAsync()
@@ -745,6 +902,19 @@ namespace LaserCuttingApp
                             System.Diagnostics.Debug.WriteLine($"Error al cargar desde capability: {ex.Message}");
                         }
                     }
+
+                    // Complementar máquinas disponibles con los recursos encontrados en METHDA
+                    foreach (var kvp in cacheRutasAlternas)
+                    {
+                        foreach (var rec in kvp.Value)
+                        {
+                            if (!string.IsNullOrEmpty(rec) && !maquinasDisponibles.Contains(rec))
+                            {
+                                maquinasDisponibles.Add(rec);
+                            }
+                        }
+                    }
+                    maquinasDisponibles.Sort();
                 });
 
                 // Actualizar ComboBox en el hilo UI
@@ -962,6 +1132,70 @@ namespace LaserCuttingApp
             return limpia;
         }
 
+        // ============== EVALUAR RUTA PRINCIPAL VS ALTERNA (METHDA) ==============
+        private RecursoInfo EvaluarRutaParte(string parteConsultada, string parteEncontrada, string recursoEncontrado, string catId, string descripcionBase)
+        {
+            string recursoFinal = recursoEncontrado;
+            bool esRutaAlterna = false;
+            bool esRutaValida = true;
+            string parteLimpia = LimpiarNumeroParte(parteConsultada);
+
+            // Obtener los recursos alternos autorizados en METHDA para esta parte
+            List<string> recursosAlternos = ObtenerRecursosAlternos(parteConsultada);
+            if (recursosAlternos.Count == 0 && !string.IsNullOrEmpty(parteLimpia) && parteLimpia != parteConsultada)
+            {
+                recursosAlternos = ObtenerRecursosAlternos(parteLimpia);
+            }
+            if (recursosAlternos.Count == 0 && !string.IsNullOrEmpty(parteEncontrada) && parteEncontrada != parteConsultada)
+            {
+                recursosAlternos = ObtenerRecursosAlternos(parteEncontrada);
+            }
+
+            string descFinal = descripcionBase;
+
+            if (!string.IsNullOrEmpty(maquinaSeleccionada) && recursoEncontrado != "No especificado" && recursoEncontrado != "Error")
+            {
+                if (recursoEncontrado.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Es la máquina principal asignada
+                    recursoFinal = maquinaSeleccionada;
+                    esRutaAlterna = false;
+                    esRutaValida = true;
+                    descFinal = !string.IsNullOrEmpty(descripcionBase) ? descripcionBase : $"Ruta Principal ({maquinaSeleccionada})";
+                }
+                else if (recursosAlternos.Contains(maquinaSeleccionada, StringComparer.OrdinalIgnoreCase))
+                {
+                    // Es una ruta alterna válida registrada en S1020365.MJDAT.METHDA
+                    recursoFinal = maquinaSeleccionada;
+                    esRutaAlterna = true;
+                    esRutaValida = true;
+                    descFinal = $"RUTA ALTERNA (Original: {recursoEncontrado})";
+                    System.Diagnostics.Debug.WriteLine($"✓ RUTA ALTERNA METHDA: '{parteConsultada}' autorizada en '{maquinaSeleccionada}' (Original: '{recursoEncontrado}')");
+                }
+                else
+                {
+                    // No es máquina principal ni está registrada en METHDA para esta máquina
+                    recursoFinal = recursoEncontrado;
+                    esRutaAlterna = false;
+                    esRutaValida = false;
+                    descFinal = $"Sin ruta en {maquinaSeleccionada} (Original: {recursoEncontrado})";
+                    System.Diagnostics.Debug.WriteLine($"⚠️ SIN RUTA: '{parteConsultada}' asignada a '{recursoEncontrado}', no tiene ruta en '{maquinaSeleccionada}'");
+                }
+            }
+
+            return new RecursoInfo
+            {
+                Recurso = recursoFinal,
+                Descripcion = descFinal,
+                CAT_ID = catId,
+                NumeroParteReal = string.IsNullOrEmpty(parteEncontrada) ? parteConsultada : parteEncontrada,
+                EsRutaAlterna = esRutaAlterna,
+                EsRutaValida = esRutaValida,
+                RecursoOriginal = recursoEncontrado,
+                RecursosAlternosPermitidos = recursosAlternos
+            };
+        }
+
         // ============== OBTENER RECURSO Y CAT_ID ==============
         private async Task<RecursoInfo> ObtenerRecursoDesdeTablaAsync(string numeroParte)
         {
@@ -1023,29 +1257,7 @@ namespace LaserCuttingApp
                     string catId = dtNueva.Rows[0]["cat_id"].ToString() ?? "0";
                     string descripcion = dtNueva.Rows[0]["desc_recurso"].ToString() ?? "";
 
-                    string recursoFinal = recursoEncontrado;
-                    bool esRutaAlterna = false;
-
-                    if (!string.IsNullOrEmpty(maquinaSeleccionada) &&
-                        !recursoEncontrado.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase) &&
-                        recursoEncontrado != "No especificado")
-                    {
-                        recursoFinal = maquinaSeleccionada;
-                        esRutaAlterna = true;
-                    }
-
-                    recursoInfo = new RecursoInfo
-                    {
-                        Recurso = recursoFinal,
-                        Descripcion = esRutaAlterna ? $"RUTA ALTERNA (Original: {recursoEncontrado})" : descripcion,
-                        CAT_ID = catId,
-                        NumeroParteReal = parteEncontrada
-                    };
-
-                    if (esRutaAlterna)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"RUTA ALTERNA: '{numeroParte}' original en {recursoEncontrado}, reportando en {maquinaSeleccionada}");
-                    }
+                    recursoInfo = EvaluarRutaParte(numeroParte, parteEncontrada, recursoEncontrado, catId, descripcion);
 
                     cacheRecursos[numeroParte] = recursoInfo;
                     if (parteLimpia != numeroParte) cacheRecursos[parteLimpia] = recursoInfo;
@@ -1094,29 +1306,7 @@ namespace LaserCuttingApp
                     string catId = dtAntigua.Rows[0]["cat_id"].ToString() ?? "0";
                     string descripcion = dtAntigua.Rows[0]["desc_recurso"].ToString() ?? "";
 
-                    string recursoFinal = recursoEncontrado;
-                    bool esRutaAlterna = false;
-
-                    if (!string.IsNullOrEmpty(maquinaSeleccionada) &&
-                        !recursoEncontrado.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase) &&
-                        recursoEncontrado != "No especificado")
-                    {
-                        recursoFinal = maquinaSeleccionada;
-                        esRutaAlterna = true;
-                    }
-
-                    recursoInfo = new RecursoInfo
-                    {
-                        Recurso = recursoFinal,
-                        Descripcion = esRutaAlterna ? $"RUTA ALTERNA (Original: {recursoEncontrado})" : descripcion,
-                        CAT_ID = catId,
-                        NumeroParteReal = parteEncontrada
-                    };
-
-                    if (esRutaAlterna)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"RUTA ALTERNA (tabla antigua): '{numeroParte}' original en {recursoEncontrado}, reportando en {maquinaSeleccionada}");
-                    }
+                    recursoInfo = EvaluarRutaParte(numeroParte, parteEncontrada, recursoEncontrado, catId, descripcion);
 
                     cacheRecursos[numeroParte] = recursoInfo;
                     if (parteLimpia != numeroParte) cacheRecursos[parteLimpia] = recursoInfo;
@@ -1168,26 +1358,9 @@ namespace LaserCuttingApp
                         string catId = dtIncompletaNueva.Rows[0]["cat_id"].ToString() ?? "0";
                         string descripcion = dtIncompletaNueva.Rows[0]["desc_recurso"].ToString() ?? "";
 
-                        string recursoFinal = recursoEncontrado;
-                        bool esRutaAlterna = false;
+                        recursoInfo = EvaluarRutaParte(numeroParte, parteEncontrada, recursoEncontrado, catId, descripcion);
 
-                        if (!string.IsNullOrEmpty(maquinaSeleccionada) &&
-                            !recursoEncontrado.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase) &&
-                            recursoEncontrado != "No especificado")
-                        {
-                            recursoFinal = maquinaSeleccionada;
-                            esRutaAlterna = true;
-                        }
-
-                        recursoInfo = new RecursoInfo
-                        {
-                            Recurso = recursoFinal,
-                            Descripcion = esRutaAlterna ? $"RUTA ALTERNA (Original: {recursoEncontrado})" : descripcion,
-                            CAT_ID = catId,
-                            NumeroParteReal = parteEncontrada
-                        };
-
-                        System.Diagnostics.Debug.WriteLine($"PARTE INCOMPLETA RESUELTA (VW_CAPABILITY): '{numeroParte}' -> '{parteEncontrada}' | Recurso: {recursoFinal} | CAT_ID: {catId}");
+                        System.Diagnostics.Debug.WriteLine($"PARTE INCOMPLETA RESUELTA (VW_CAPABILITY): '{numeroParte}' -> '{parteEncontrada}' | Recurso: {recursoInfo.Recurso} | CAT_ID: {catId}");
 
                         cacheRecursos[numeroParte] = recursoInfo;
                         cacheRecursos[parteBase] = recursoInfo;
@@ -1238,26 +1411,9 @@ namespace LaserCuttingApp
                         string catId = dtIncompletaAntigua.Rows[0]["cat_id"].ToString() ?? "0";
                         string descripcion = dtIncompletaAntigua.Rows[0]["desc_recurso"].ToString() ?? "";
 
-                        string recursoFinal = recursoEncontrado;
-                        bool esRutaAlterna = false;
+                        recursoInfo = EvaluarRutaParte(numeroParte, parteEncontrada, recursoEncontrado, catId, descripcion);
 
-                        if (!string.IsNullOrEmpty(maquinaSeleccionada) &&
-                            !recursoEncontrado.Equals(maquinaSeleccionada, StringComparison.OrdinalIgnoreCase) &&
-                            recursoEncontrado != "No especificado")
-                        {
-                            recursoFinal = maquinaSeleccionada;
-                            esRutaAlterna = true;
-                        }
-
-                        recursoInfo = new RecursoInfo
-                        {
-                            Recurso = recursoFinal,
-                            Descripcion = esRutaAlterna ? $"RUTA ALTERNA (Original: {recursoEncontrado})" : descripcion,
-                            CAT_ID = catId,
-                            NumeroParteReal = parteEncontrada
-                        };
-
-                        System.Diagnostics.Debug.WriteLine($"PARTE INCOMPLETA RESUELTA (tabla antigua): '{numeroParte}' -> '{parteEncontrada}' | Recurso: {recursoFinal} | CAT_ID: {catId}");
+                        System.Diagnostics.Debug.WriteLine($"PARTE INCOMPLETA RESUELTA (tabla antigua): '{numeroParte}' -> '{parteEncontrada}' | Recurso: {recursoInfo.Recurso} | CAT_ID: {catId}");
 
                         cacheRecursos[numeroParte] = recursoInfo;
                         cacheRecursos[parteBase] = recursoInfo;
@@ -1266,13 +1422,48 @@ namespace LaserCuttingApp
                     }
                 }
 
+                // ===== PASO 4: Si no se encontró en VW_CAPABILITY ni capability, buscar en METHDA =====
+                var alternosMETHDA = ObtenerRecursosAlternos(numeroParte);
+                if (alternosMETHDA.Count == 0 && !string.IsNullOrEmpty(parteLimpia) && parteLimpia != numeroParte)
+                    alternosMETHDA = ObtenerRecursosAlternos(parteLimpia);
+
+                if (alternosMETHDA.Count > 0)
+                {
+                    bool esValida = !string.IsNullOrEmpty(maquinaSeleccionada) && 
+                                    alternosMETHDA.Contains(maquinaSeleccionada, StringComparer.OrdinalIgnoreCase);
+                    string recElegido = esValida ? maquinaSeleccionada : alternosMETHDA[0];
+                    string catIdRespaldo = await BuscarCatIdRespaldoAsync(numeroParte, parteLimpia);
+
+                    recursoInfo = new RecursoInfo
+                    {
+                        Recurso = recElegido,
+                        Descripcion = esValida 
+                            ? "RUTA ALTERNA (METHDA)" 
+                            : $"Sin ruta en {maquinaSeleccionada} (METHDA: {string.Join(", ", alternosMETHDA)})",
+                        CAT_ID = catIdRespaldo,
+                        NumeroParteReal = numeroParte,
+                        EsRutaAlterna = true,
+                        EsRutaValida = esValida,
+                        RecursoOriginal = alternosMETHDA[0],
+                        RecursosAlternosPermitidos = alternosMETHDA
+                    };
+
+                    cacheRecursos[numeroParte] = recursoInfo;
+                    if (parteLimpia != numeroParte) cacheRecursos[parteLimpia] = recursoInfo;
+                    return recursoInfo;
+                }
+
                 // ===== SIN RESULTADOS =====
                 recursoInfo = new RecursoInfo
                 {
                     Recurso = "No especificado",
                     Descripcion = "",
                     CAT_ID = "0",
-                    NumeroParteReal = numeroParte
+                    NumeroParteReal = numeroParte,
+                    EsRutaAlterna = false,
+                    EsRutaValida = false,
+                    RecursoOriginal = "No especificado",
+                    RecursosAlternosPermitidos = new List<string>()
                 };
                 cacheRecursos[numeroParte] = recursoInfo;
                 return recursoInfo;
@@ -1280,7 +1471,7 @@ namespace LaserCuttingApp
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"Error al obtener recurso: {ex.Message}");
-                return new RecursoInfo { Recurso = "Error", Descripcion = "", CAT_ID = "0", NumeroParteReal = numeroParte };
+                return new RecursoInfo { Recurso = "Error", Descripcion = "", CAT_ID = "0", NumeroParteReal = numeroParte, EsRutaValida = false };
             }
         }
 
@@ -1568,6 +1759,7 @@ namespace LaserCuttingApp
 
                 partesActuales.Clear();
                 List<string> partesConRutaAlterna = new List<string>();
+                List<string> partesSinRuta = new List<string>();
                 List<string> partesSinRecurso = new List<string>();
 
                 if (dt.Rows.Count > 0)
@@ -1597,9 +1789,13 @@ namespace LaserCuttingApp
                         partesActuales.Add(parte);
 
                         // Verificar ruta alterna
-                        if (recursoInfo.Descripcion.Contains("RUTA ALTERNA"))
+                        if (recursoInfo.EsRutaAlterna && recursoInfo.EsRutaValida)
                         {
                             partesConRutaAlterna.Add(parte.PrdRefDst);
+                        }
+                        else if (!recursoInfo.EsRutaValida)
+                        {
+                            partesSinRuta.Add(parte.PrdRefDst);
                         }
 
                         // Verificar sin recurso
@@ -1622,7 +1818,12 @@ namespace LaserCuttingApp
 
                     if (partesConRutaAlterna.Count > 0)
                     {
-                        mensaje += $" | {partesConRutaAlterna.Count} con ruta alterna";
+                        mensaje += $" | {partesConRutaAlterna.Count} ruta alterna (METHDA)";
+                    }
+
+                    if (partesSinRuta.Count > 0)
+                    {
+                        mensaje += $" | {partesSinRuta.Count} sin ruta en {maquinaSeleccionada}";
                     }
 
                     if (partesSinRecurso.Count > 0)
@@ -1630,8 +1831,11 @@ namespace LaserCuttingApp
                         mensaje += $" | {partesSinRecurso.Count} sin CAT_ID";
                     }
 
-                    MostrarNotificacion(mensaje,
-                        partesConRutaAlterna.Count > 0 ? Color.Orange : Color.Green);
+                    Color colorNotif = (partesSinRuta.Count > 0 || partesSinRecurso.Count > 0)
+                        ? Color.Orange
+                        : (partesConRutaAlterna.Count > 0 ? Color.Orange : Color.Green);
+
+                    MostrarNotificacion(mensaje, colorNotif);
                 }
                 else
                 {
@@ -1680,22 +1884,27 @@ namespace LaserCuttingApp
                 string infoAdicional = "";
                 Color colorBordeBoton = colorBorde;
 
-                if (recursoInfo != null && recursoInfo.Recurso != "No especificado")
+                if (recursoInfo != null && recursoInfo.Recurso != "No especificado" && recursoInfo.Recurso != "Error")
                 {
-                    if (recursoInfo.Descripcion.Contains("RUTA ALTERNA"))
+                    if (recursoInfo.EsRutaAlterna && recursoInfo.EsRutaValida)
                     {
-                        infoAdicional = "\n[Ruta Alterna]";
+                        infoAdicional = $"\n[Ruta Alterna: {recursoInfo.Recurso}]";
                         colorBordeBoton = Color.Orange;
                     }
-                    else
+                    else if (recursoInfo.EsRutaValida)
                     {
                         infoAdicional = $"\n[{recursoInfo.Recurso}]";
                         colorBordeBoton = Color.Green;
                     }
+                    else
+                    {
+                        infoAdicional = $"\n[Sin ruta en {maquinaSeleccionada} (Orig: {recursoInfo.RecursoOriginal})]";
+                        colorBordeBoton = Color.Red;
+                    }
                 }
                 else
                 {
-                    infoAdicional = "\n[Sin recurso]";
+                    infoAdicional = "\n[Sin recurso asignado]";
                     colorBordeBoton = Color.Red;
                 }
 
@@ -1745,12 +1954,40 @@ namespace LaserCuttingApp
                 // Cargar información de la parte
                 await CargarInfoParteAsync(parte);
 
+                // Advertir si la parte no tiene ruta configurada para la máquina seleccionada
+                RecursoInfo recursoInfo = null;
+                cacheRecursos.TryGetValue(parte.PrdRefDst, out recursoInfo);
+
+                if (recursoInfo != null && !recursoInfo.EsRutaValida)
+                {
+                    string detalleRutas = (recursoInfo.RecursosAlternosPermitidos != null && recursoInfo.RecursosAlternosPermitidos.Count > 0)
+                        ? string.Join(", ", recursoInfo.RecursosAlternosPermitidos)
+                        : "Ninguna";
+
+                    string advertenciaSinRuta = $"⚠️ ADVERTENCIA DE RUTA NO ASIGNADA\n\n" +
+                        $"La parte '{parte.PrdRefDst}' NO está configurada para trabajar en la máquina '{maquinaSeleccionada}'.\n\n" +
+                        $"• Máquina principal: {recursoInfo.RecursoOriginal}\n" +
+                        $"• Rutas alternas autorizadas (METHDA): {detalleRutas}\n\n" +
+                        $"¿Desea forzar el reporte en la máquina '{maquinaSeleccionada}'?";
+
+                    DialogResult dlg = MessageBox.Show(
+                        advertenciaSinRuta,
+                        "Máquina No Asignada",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+
+                    if (dlg != DialogResult.Yes)
+                    {
+                        return;
+                    }
+
+                    // Si confirma forzar, se le asigna la máquina seleccionada
+                    recursoSeleccionado = maquinaSeleccionada;
+                }
+
                 // Verificar si se puede reportar
                 if (catIdSeleccionado != "0" && cantidadProduccionActual > 0)
                 {
-                    RecursoInfo recursoInfo = null;
-                    cacheRecursos.TryGetValue(parte.PrdRefDst, out recursoInfo);
-
                     string parteTextoDialogo = parte.PrdRefDst;
                     if (recursoInfo != null && !string.IsNullOrEmpty(recursoInfo.NumeroParteReal) &&
                         !recursoInfo.NumeroParteReal.Equals(parte.PrdRefDst, StringComparison.OrdinalIgnoreCase))
@@ -1767,9 +2004,13 @@ namespace LaserCuttingApp
                         $"CAT_ID: {catIdSeleccionado}";
 
                     // Verificar si es ruta alterna
-                    if (recursoInfo != null && recursoInfo.Descripcion.Contains("RUTA ALTERNA"))
+                    if (recursoInfo != null && recursoInfo.EsRutaAlterna && recursoInfo.EsRutaValida)
                     {
-                        mensajeConfirmacion += $"\n\n⚠️ ATENCIÓN: Reportando en {maquinaSeleccionada} (Ruta Alterna)";
+                        mensajeConfirmacion += $"\n\n⚠️ ATENCIÓN: Reportando en {maquinaSeleccionada} (Ruta Alterna autorizada por METHDA)";
+                    }
+                    else if (recursoInfo != null && !recursoInfo.EsRutaValida)
+                    {
+                        mensajeConfirmacion += $"\n\n⚠️ ATENCIÓN: Reportando en {maquinaSeleccionada} (FORZADO - Sin ruta autorizada)";
                     }
 
                     DialogResult result = MessageBox.Show(
@@ -1842,17 +2083,22 @@ namespace LaserCuttingApp
 
                     // Mostrar información del recurso
                     string textoRecurso;
-                    if (recursoInfo.Descripcion.Contains("RUTA ALTERNA"))
+                    if (recursoInfo.EsRutaAlterna && recursoInfo.EsRutaValida)
                     {
-                        textoRecurso = $"Recurso: {recursoSeleccionado} {recursoInfo.Descripcion}";
+                        textoRecurso = $"Recurso: {recursoSeleccionado} [{recursoInfo.Descripcion}]";
                         lblRecursoSeleccionado.ForeColor = Color.Orange;
                     }
-                    else
+                    else if (recursoInfo.EsRutaValida)
                     {
                         textoRecurso = string.IsNullOrEmpty(recursoInfo.Descripcion)
                             ? $"Recurso: {recursoSeleccionado}"
                             : $"Recurso: {recursoSeleccionado} - {recursoInfo.Descripcion}";
                         lblRecursoSeleccionado.ForeColor = Color.Black;
+                    }
+                    else
+                    {
+                        textoRecurso = $"Recurso: {recursoSeleccionado} [SIN RUTA EN {maquinaSeleccionada}]";
+                        lblRecursoSeleccionado.ForeColor = Color.Red;
                     }
                     lblRecursoSeleccionado.Text = textoRecurso;
 
