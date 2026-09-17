@@ -34,6 +34,10 @@ namespace LaserCuttingApp
         private int cantidadReportadaNesting = 0;
         private int cantidadPendienteNesting = 0;
         private bool isLoading = false;
+        private bool isReporting = false;
+        private DateTime ultimoReporteFecha = DateTime.MinValue;
+        private string ultimaParteReportada = "";
+        private string ultimoNstRefReportado = "";
         private string cnnIngresado = "";
         private string maquinaSeleccionada = "";
         private List<string> maquinasDisponibles = new List<string>();
@@ -1576,69 +1580,41 @@ namespace LaserCuttingApp
                 System.Diagnostics.Debug.WriteLine($"  RESOURCE: {recursoSeleccionado}");
                 System.Diagnostics.Debug.WriteLine($"  Cantidad: {cantidad}");
 
+                // Validaciones estrictas de datos
+                if (string.IsNullOrWhiteSpace(catIdSeleccionado) || !int.TryParse(catIdSeleccionado, out int catIdInt) || catIdInt <= 0)
+                {
+                    throw new ArgumentException($"CAT_ID inválido: '{catIdSeleccionado}'. Debe ser un número entero mayor a 0.");
+                }
+
+                if (string.IsNullOrWhiteSpace(recursoSeleccionado) || recursoSeleccionado == "No especificado" || recursoSeleccionado == "Error")
+                {
+                    throw new ArgumentException($"Recurso inválido: '{recursoSeleccionado}'.");
+                }
+
+                if (cantidad <= 0)
+                {
+                    throw new ArgumentException($"Cantidad inválida: {cantidad}. Debe ser mayor a 0.");
+                }
+
                 using (SqlConnection conn = new SqlConnection(connectionStringMES_PRODUCTION))
                 {
                     await conn.OpenAsync();
                     System.Diagnostics.Debug.WriteLine("  Conexión abierta a MES_PRODUCTION");
 
-                    // Verificar si ya existe un registro
-                    string checkSql = @"
-                    SELECT ID FROM TBL_MES_MARS_LASER
-                    WHERE CAT_ID = @cat_id
-                      AND RESOURCE = @resource
-                      AND CAST(DATATIME AS DATE) = CAST(GETDATE() AS DATE)";
+                    // Insertar SIEMPRE un nuevo registro independiente (NUNCA hacer UPDATE)
+                    string insertSql = @"
+                    INSERT INTO TBL_MES_MARS_LASER (CAT_ID, RESOURCE, DATATIME, [COUNT])
+                    OUTPUT INSERTED.ID
+                    VALUES (@cat_id, @resource, GETDATE(), @count)";
 
-                    int? existingId = null;
-
-                    using (SqlCommand cmd = new SqlCommand(checkSql, conn))
+                    using (SqlCommand cmd = new SqlCommand(insertSql, conn))
                     {
-                        cmd.Parameters.AddWithValue("@cat_id", int.Parse(catIdSeleccionado));
+                        cmd.Parameters.AddWithValue("@cat_id", catIdInt);
                         cmd.Parameters.AddWithValue("@resource", recursoSeleccionado);
+                        cmd.Parameters.AddWithValue("@count", cantidad);
 
-                        object result = await cmd.ExecuteScalarAsync();
-                        if (result != null && result != DBNull.Value)
-                        {
-                            existingId = Convert.ToInt32(result);
-                            System.Diagnostics.Debug.WriteLine($"  Registro existente: ID={existingId}");
-                        }
-                        else
-                        {
-                            System.Diagnostics.Debug.WriteLine("  No existe registro previo");
-                        }
-                    }
-
-                    if (existingId.HasValue)
-                    {
-                        // Actualizar registro existente
-                        string updateSql = @"
-                        UPDATE TBL_MES_MARS_LASER
-                        SET [COUNT] = [COUNT] + @cantidad,
-                            DATATIME = GETDATE()
-                        WHERE ID = @id";
-
-                        using (SqlCommand cmd = new SqlCommand(updateSql, conn))
-                        {
-                            cmd.Parameters.AddWithValue("@cantidad", cantidad);
-                            cmd.Parameters.AddWithValue("@id", existingId.Value);
-                            int rowsAffected = await cmd.ExecuteNonQueryAsync();
-                            System.Diagnostics.Debug.WriteLine($"  UPDATE: {rowsAffected} filas afectadas");
-                        }
-                    }
-                    else
-                    {
-                        // Insertar nuevo registro
-                        string insertSql = @"
-                        INSERT INTO TBL_MES_MARS_LASER (CAT_ID, RESOURCE, DATATIME, [COUNT])
-                        VALUES (@cat_id, @resource, GETDATE(), @count)";
-
-                        using (SqlCommand cmd = new SqlCommand(insertSql, conn))
-                        {
-                            cmd.Parameters.AddWithValue("@cat_id", int.Parse(catIdSeleccionado));
-                            cmd.Parameters.AddWithValue("@resource", recursoSeleccionado);
-                            cmd.Parameters.AddWithValue("@count", cantidad);
-                            int rowsAffected = await cmd.ExecuteNonQueryAsync();
-                            System.Diagnostics.Debug.WriteLine($"  INSERT: {rowsAffected} filas afectadas");
-                        }
+                        object insertedId = await cmd.ExecuteScalarAsync();
+                        System.Diagnostics.Debug.WriteLine($"  INSERT exitoso: Nuevo ID={insertedId}, CAT_ID={catIdInt}, RESOURCE={recursoSeleccionado}, COUNT={cantidad}");
                     }
                 }
 
@@ -1939,8 +1915,16 @@ namespace LaserCuttingApp
         // ============== CLICK EN BOTÓN DE PARTE ==============
         private async Task BtnParte_ClickAsync(object sender, EventArgs e)
         {
+            if (isLoading || isReporting) return;
+
             if (sender is Button btn && btn.Tag is ParteInfo parte)
             {
+                if (string.IsNullOrEmpty(maquinaSeleccionada))
+                {
+                    MostrarNotificacion("Seleccione una máquina antes de seleccionar una parte", Color.Orange);
+                    return;
+                }
+
                 if (parteSeleccionadaBtn != null)
                 {
                     parteSeleccionadaBtn.BackColor = Color.White;
@@ -2138,6 +2122,12 @@ namespace LaserCuttingApp
         // ============== REPORTAR PRODUCCIÓN ==============
         private async Task ReportarProduccionAsync(int cantidadReportar)
         {
+            if (isReporting)
+            {
+                MostrarNotificacion("Ya hay un reporte en proceso. Por favor espere...", Color.Orange);
+                return;
+            }
+
             if (string.IsNullOrEmpty(nstRefActual))
             {
                 MostrarNotificacion("No se encontro informacion para esta parte", Color.Red);
@@ -2150,7 +2140,7 @@ namespace LaserCuttingApp
                 return;
             }
 
-            if (string.IsNullOrEmpty(recursoSeleccionado) || recursoSeleccionado == "No especificado")
+            if (string.IsNullOrEmpty(recursoSeleccionado) || recursoSeleccionado == "No especificado" || recursoSeleccionado == "Error")
             {
                 MostrarNotificacion("No se encontró un recurso válido para reportar", Color.Red);
                 return;
@@ -2165,6 +2155,7 @@ namespace LaserCuttingApp
             await semaphore.WaitAsync();
             try
             {
+                isReporting = true;
                 MostrarCargando(true, "Reportando producción...");
 
                 // ===== DIAGNÓSTICO =====
@@ -2182,7 +2173,7 @@ namespace LaserCuttingApp
                 System.Diagnostics.Debug.WriteLine($"NstRef: {nstRefActual}");
                 System.Diagnostics.Debug.WriteLine($"MnORef: {mnORefActual}");
 
-                // ===== 1. Guardar en TBL_MES_MARS_LASER =====
+                // ===== 1. Guardar en TBL_MES_MARS_LASER (NUEVO REGISTRO INDEPENDIENTE) =====
                 System.Diagnostics.Debug.WriteLine("");
                 System.Diagnostics.Debug.WriteLine("--- Paso 1: Guardar en TBL_MES_MARS_LASER ---");
                 try
@@ -2223,8 +2214,13 @@ namespace LaserCuttingApp
                     throw;
                 }
 
-                // ===== 4. Mensaje de éxito =====
-                string mensajeExito = $"✅ Reporte exitoso: {cantidadReportar:N0} piezas en {recursoSeleccionado}";
+                // ===== 4. Registrar marca de último reporte exitoso =====
+                ultimoReporteFecha = DateTime.Now;
+                ultimaParteReportada = parteSeleccionada;
+                ultimoNstRefReportado = nstRefActual;
+
+                // ===== 5. Mensaje de éxito =====
+                string mensajeExito = $"✅ Reporte exitoso: {cantidadReportar:N0} pieza(s) en {recursoSeleccionado}";
 
                 RecursoInfo recursoInfo = null;
                 cacheRecursos.TryGetValue(parteSeleccionada, out recursoInfo);
@@ -2241,7 +2237,7 @@ namespace LaserCuttingApp
                 System.Diagnostics.Debug.WriteLine("========================================");
                 System.Diagnostics.Debug.WriteLine("");
 
-                // ===== 5. Actualizar información en pantalla =====
+                // ===== 6. Actualizar información en pantalla =====
                 if (parteSeleccionadaBtn != null && parteSeleccionadaBtn.Tag is ParteInfo parte)
                 {
                     await CargarInfoParteAsync(parte);
@@ -2261,6 +2257,7 @@ namespace LaserCuttingApp
             }
             finally
             {
+                isReporting = false;
                 MostrarCargando(false);
                 semaphore.Release();
             }
