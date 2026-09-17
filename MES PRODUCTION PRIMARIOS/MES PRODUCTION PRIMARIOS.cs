@@ -2013,11 +2013,9 @@ namespace LaserCuttingApp
                         mensajeConfirmacion += $"\n\n⚠️ ATENCIÓN: Reportando en {maquinaSeleccionada} (FORZADO - Sin ruta autorizada)";
                     }
 
-                    DialogResult result = MessageBox.Show(
+                    DialogResult result = CustomConfirmDialog.Show(
                         mensajeConfirmacion,
-                        "Confirmar Reporte",
-                        MessageBoxButtons.YesNo,
-                        MessageBoxIcon.Question);
+                        "Confirmar Reporte");
 
                     if (result == DialogResult.Yes)
                     {
@@ -2375,6 +2373,74 @@ namespace LaserCuttingApp
             timerReloj?.Dispose();
             timerVerificacionConexion?.Dispose();
             base.OnFormClosing(e);
+        }
+    }
+
+    public class CustomConfirmDialog : Form
+    {
+        public CustomConfirmDialog(string title, string message)
+        {
+            this.Text = title;
+            this.Size = new Size(800, 600);
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+            this.BackColor = Color.White;
+            this.ShowIcon = false;
+
+            Label lblMessage = new Label
+            {
+                Text = message,
+                Font = new Font("Arial", 20, FontStyle.Bold),
+                Location = new Point(30, 30),
+                Size = new Size(720, 350),
+                TextAlign = ContentAlignment.MiddleCenter,
+                AutoSize = false
+            };
+
+            Button btnYes = new Button
+            {
+                Text = "✓ SI",
+                DialogResult = DialogResult.Yes,
+                Size = new Size(250, 100),
+                Location = new Point(100, 420),
+                Font = new Font("Arial", 26, FontStyle.Bold),
+                BackColor = Color.FromArgb(40, 167, 69), 
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand
+            };
+            btnYes.FlatAppearance.BorderSize = 0;
+
+            Button btnNo = new Button
+            {
+                Text = "✗ NO",
+                DialogResult = DialogResult.No,
+                Size = new Size(250, 100),
+                Location = new Point(430, 420),
+                Font = new Font("Arial", 26, FontStyle.Bold),
+                BackColor = Color.FromArgb(220, 53, 69), 
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand
+            };
+            btnNo.FlatAppearance.BorderSize = 0;
+
+            this.Controls.Add(lblMessage);
+            this.Controls.Add(btnYes);
+            this.Controls.Add(btnNo);
+
+            this.AcceptButton = btnYes;
+            this.CancelButton = btnNo;
+        }
+
+        public static DialogResult Show(string message, string title)
+        {
+            using (var dialog = new CustomConfirmDialog(title, message))
+            {
+                return dialog.ShowDialog();
+            }
         }
     }
 }
